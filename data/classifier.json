@@ -1,0 +1,36 @@
+{
+    "soccernet":{
+        "default":"1.0.0",
+        "versions":{
+            "1.0.0":{
+                "embedding_model": "Xenova/GIST-small-Embedding-v0",
+                "model_url": "https://danielruss.github.io/soccer-models/SOCcer_v3.0.0.onnx",
+                "pipeline_config": {
+                    "dtype": "fp32",
+                    "quantized": false
+                },
+                "embedding_config": {
+                    "pooling": "cls",
+                    "normalize": true
+                }
+            }
+        }
+    },
+    "clips":{
+        "default":"1.0.0",
+        "versions":{
+            "1.0.0":{
+                "embedding_model": "Xenova/GIST-small-Embedding-v0",
+                "model_url": "https://danielruss.github.io/soccer-models/clips_v0.0.2.onnx",
+                "pipeline_config": {
+                    "dtype": "fp32",
+                    "quantized": false
+                },
+                "embedding_config": {
+                    "pooling": "cls",
+                    "normalize": true
+                }            
+            }
+        }
+    }
+}
