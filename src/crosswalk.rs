@@ -13,14 +13,11 @@ pub struct ClassificationSystemRegistry{
     crosswalks: HashMap<KnownCrosswalk,Arc<Crosswalk>>
 }
 impl ClassificationSystemRegistry{
-    fn get_or_load_classification_system(&mut self,system:KnownClassificationSystem) -> Result<Arc<ClassificationSystem>,MyError>{
-        if let Some(cs) = self.classification_systems.get(&system) {
-            Ok(Arc::clone(cs))
-        } else {
-            let cs= Arc::new(ClassificationSystem::try_from(system)?);
-            self.classification_systems.insert(system, cs.clone());
-            Ok(cs)
-        }
+    fn get_or_load_classification_system(&mut self,system:KnownClassificationSystem) ->  Arc<ClassificationSystem> {
+        let cs = self.classification_systems
+            .entry(system)
+            .or_insert_with(|| Arc::new(ClassificationSystem::from(system)));
+        Arc::clone(cs)
     }
 
     fn get_or_load_crosswalk(&mut self,crosswalk:KnownCrosswalk,source_cs:Arc<ClassificationSystem>,target_cs:Arc<ClassificationSystem>) -> Result<Arc<Crosswalk>,MyError>{
@@ -34,7 +31,7 @@ impl ClassificationSystemRegistry{
         }
     }
 
-    pub fn get_classification_system(system:KnownClassificationSystem) -> Result<Arc<ClassificationSystem>,MyError>{
+    pub fn get_classification_system(system:KnownClassificationSystem) -> Arc<ClassificationSystem> {
         let mut reg = CLASSIFICATION_SYSTEM_REGISTRY.write().expect("Lock poisoned");
         reg.get_or_load_classification_system(system)
     }
@@ -50,8 +47,8 @@ impl ClassificationSystemRegistry{
         let (source,target) = match crosswalk {
             KnownCrosswalk::SOC1980SOC2010 => (KnownClassificationSystem::SOC1980,KnownClassificationSystem::SOC2010),
         };
-        let source_cs = Self::get_classification_system(source)?;
-        let target_cs = Self::get_classification_system(target)?;
+        let source_cs = Self::get_classification_system(source);
+        let target_cs = Self::get_classification_system(target);
 
         let mut reg = CLASSIFICATION_SYSTEM_REGISTRY.write().expect("Lock poisoned");
         reg.get_or_load_crosswalk(crosswalk,source_cs,target_cs)
@@ -241,7 +238,24 @@ impl ClassificationSystem {
 
 }
 
+impl From<KnownClassificationSystem> for ClassificationSystem{
 
+    fn from(value: KnownClassificationSystem) -> Self {
+        let text_str = match value {
+            KnownClassificationSystem::SOC1980 => include_str!("../data/soc1980.csv"),
+            KnownClassificationSystem::SOC2010 => include_str!("../data/soc2010.csv")             
+        };
+
+        let mut reader = Reader::from_reader(text_str.as_bytes());
+        let rows:Vec<StringRecord> = reader.records()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Self::from_stringrecords(rows)
+    }
+}
+
+/* 
 impl TryFrom<KnownClassificationSystem> for ClassificationSystem{
     type Error=MyError;
 
@@ -259,6 +273,7 @@ impl TryFrom<KnownClassificationSystem> for ClassificationSystem{
         Ok(Self::from_stringrecords(rows))
     }
 }
+*/
 
 #[derive(Debug,Deserialize)]
 struct ClassificationSystemRow{
@@ -356,8 +371,8 @@ mod tests {
 
     #[test]
     fn test_load(){
-        let soc1980 = ClassificationSystemRegistry::get_classification_system(KnownClassificationSystem::SOC1980).unwrap_or_default();
-        let soc2010 = ClassificationSystemRegistry::get_classification_system(KnownClassificationSystem::SOC2010).unwrap_or_default();
+        let soc1980 = ClassificationSystemRegistry::get_classification_system(KnownClassificationSystem::SOC1980);
+        let soc2010 = ClassificationSystemRegistry::get_classification_system(KnownClassificationSystem::SOC2010);
         assert_eq!(soc1980.len(),665);
         assert_eq!(soc2010.len(),840);
 
@@ -390,6 +405,17 @@ mod tests {
         assert_eq!(Some(("9911", "GRADUATE ASSISTANT")),test_code);
         let test_code = x.get_code_title(c112_index.copied().unwrap());
         println!("{:?}",test_code);
+    }
+
+    #[test]
+    fn test_kcs(){
+        let soc1980 = ClassificationSystemRegistry::get_classification_system(KnownClassificationSystem::SOC1980);
+        let code = soc1980.get_code(0).unwrap();
+        println!("{:?}",code);
+        let title = soc1980.get_title(0).unwrap();
+        println!("{:?}",title);
+        let ct = soc1980.get_code_title(0).unwrap();
+        println!("{:?}",ct);
     }
 
     #[test]
