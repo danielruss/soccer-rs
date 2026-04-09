@@ -4,8 +4,10 @@
         "versions":{
             "1.0.0":{
                 "model_type": "soccernet",
+                "output_classification_system":"soc2010",
                 "embedding_model": "Xenova/GIST-small-Embedding-v0",
                 "model_url": "https://danielruss.github.io/soccer-models/SOCcer_v3.0.0.onnx",
+                "model_output_name":"soc2010_out",
                 "pipeline_config": {
                     "dtype": "fp32",
                     "quantized": false
@@ -22,8 +24,10 @@
         "versions":{
             "1.0.0":{
                 "model_type": "clips",
+                "output_classification_system":"naics2022",
                 "embedding_model": "Xenova/GIST-small-Embedding-v0",
                 "model_url": "https://danielruss.github.io/soccer-models/clips_v0.0.2.onnx",
+                "model_output_name":"naics2022_out",
                 "pipeline_config": {
                     "dtype": "fp32",
                     "quantized": false

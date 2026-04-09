@@ -1,92 +1,101 @@
 
 #![allow(dead_code)]
-use std::{collections::HashMap, fs::File, path::PathBuf, sync::{Arc, RwLock}};
+use std::{collections::HashMap, fs::File, path::PathBuf, str::FromStr, sync::Arc};
 
 use csv::{Reader, StringRecord};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use crate::{cache::Cache,error::MyError};
 
+pub trait Resolve{
+    type Output;
+    fn resolve(&self) -> Self::Output;
+}
+
 #[derive(Debug)]
 pub struct ClassificationSystemRegistry{
-    classification_systems: HashMap<KnownClassificationSystem,Arc<ClassificationSystem>>,
-    crosswalks: HashMap<KnownCrosswalk,Arc<Crosswalk>>
+    pub soc1980: Arc<ClassificationSystem>,
+    pub soc2010: Arc<ClassificationSystem>,
+    pub sic1987: Arc<ClassificationSystem>,
+    pub naics2022: Arc<ClassificationSystem>,
+
+    pub soc1980_soc2010: Arc<Crosswalk>,
+    pub sic1987_naics2022: Arc<Crosswalk>,
 }
+
 impl ClassificationSystemRegistry{
-    fn get_or_load_classification_system(&mut self,system:KnownClassificationSystem) ->  Arc<ClassificationSystem> {
-        let cs = self.classification_systems
-            .entry(system)
-            .or_insert_with(|| Arc::new(ClassificationSystem::from(system)));
-        Arc::clone(cs)
-    }
-
-    fn get_or_load_crosswalk(&mut self,crosswalk:KnownCrosswalk,source_cs:Arc<ClassificationSystem>,target_cs:Arc<ClassificationSystem>) -> Result<Arc<Crosswalk>,MyError>{
-        if let Some(xw) = self.crosswalks.get(&crosswalk) {
-            Ok(Arc::clone(xw))
-        } else {
-            let xw= Arc::new(Crosswalk::new(crosswalk,source_cs,target_cs)?);   
-            self.crosswalks.insert(crosswalk, xw.clone());
-            
-            Ok(xw)
+    pub fn get_classification_system(&self, classification_system:KnownClassificationSystem) -> Arc<ClassificationSystem>{
+        match classification_system {
+            KnownClassificationSystem::SOC1980 => self.soc1980.clone(),
+            KnownClassificationSystem::SOC2010 => self.soc2010.clone(),
+            KnownClassificationSystem::SIC1987 => self.sic1987.clone(),
+            KnownClassificationSystem::NAICS2022 => self.naics2022.clone(),
         }
     }
-
-    pub fn get_classification_system(system:KnownClassificationSystem) -> Arc<ClassificationSystem> {
-        let mut reg = CLASSIFICATION_SYSTEM_REGISTRY.write().expect("Lock poisoned");
-        reg.get_or_load_classification_system(system)
-    }
-
-    pub fn get_crosswalk(crosswalk:KnownCrosswalk) -> Result<Arc<Crosswalk>,MyError>{
-        // if I already have the crosswalk short cut 
-        {
-            let reg = CLASSIFICATION_SYSTEM_REGISTRY.write().expect("Lock poisoned");
-            if  let Some(xw) = reg.crosswalks.get(&crosswalk){
-                return Ok(Arc::clone(xw));
-            }
+    pub fn get_crosswalk(&self, crosswalk:KnownCrosswalk) -> Arc<Crosswalk> {
+        match crosswalk {
+            KnownCrosswalk::SOC1980SOC2010 => self.soc1980_soc2010.clone(),
+            KnownCrosswalk::SIC1987NAICS2022 => self.sic1987_naics2022.clone(),
         }
-        let (source,target) = match crosswalk {
-            KnownCrosswalk::SOC1980SOC2010 => (KnownClassificationSystem::SOC1980,KnownClassificationSystem::SOC2010),
-        };
-        let source_cs = Self::get_classification_system(source);
-        let target_cs = Self::get_classification_system(target);
-
-        let mut reg = CLASSIFICATION_SYSTEM_REGISTRY.write().expect("Lock poisoned");
-        reg.get_or_load_crosswalk(crosswalk,source_cs,target_cs)
     }
 }
 
-pub static CLASSIFICATION_SYSTEM_REGISTRY: Lazy<RwLock<ClassificationSystemRegistry>> = Lazy::new(||{
-    RwLock::new(ClassificationSystemRegistry{
-        classification_systems: HashMap::new(),
-        crosswalks:HashMap::new(),
-    })
+
+pub static CLASSIFICATION_SYSTEM_REGISTRY: Lazy<ClassificationSystemRegistry> = Lazy::new(||{
+
+    let soc1980 = Arc::new(ClassificationSystem::from(KnownClassificationSystem::SOC1980));
+    let soc2010 = Arc::new(ClassificationSystem::from(KnownClassificationSystem::SOC2010));
+    let sic1987 = Arc::new(ClassificationSystem::from(KnownClassificationSystem::SIC1987));
+    let naics2022 = Arc::new(ClassificationSystem::from(KnownClassificationSystem::NAICS2022));
+
+    // Note: This should only panic in developement.  
+    let soc1980_soc2010 = Arc::new(
+        Crosswalk::new(KnownCrosswalk::SOC1980SOC2010,soc1980.clone(),soc2010.clone())
+            .unwrap_or_else(|e| panic!("soc1980 -> soc2010 crosswalk is invalid: {e}"))
+    );
+    let sic1987_naics2022 = Arc::new(
+        Crosswalk::new(KnownCrosswalk::SOC1980SOC2010,soc1980.clone(),soc2010.clone())
+            .unwrap_or_else(|e| panic!("soc1980 -> soc2010 crosswalk is invalid: {e}"))
+    );
+
+
+    ClassificationSystemRegistry { soc1980,soc2010,sic1987,naics2022,soc1980_soc2010,sic1987_naics2022 }
 });
 
 
-#[derive(Debug,PartialEq, Eq,Hash, Clone, Copy)]
+#[derive(Debug,PartialEq, Eq,Hash, Clone, Copy, Deserialize)]
 pub enum KnownClassificationSystem{
+    #[serde(rename = "soc1980")]
     SOC1980,
-    SOC2010
+    #[serde(rename = "soc2010")]
+    SOC2010,
+    #[serde(rename = "sic1987")]
+    SIC1987,
+    #[serde(rename = "naics2022")]
+    NAICS2022
 }
 
-impl KnownClassificationSystem{
-    pub fn load_with<F>(&self, filter:F) -> ClassificationSystem
-    where F:Fn(&StringRecord) -> bool {
+impl Resolve for KnownClassificationSystem{
+    type Output = Arc<ClassificationSystem>;
 
-        let text_str = match &self {
-            KnownClassificationSystem::SOC1980 => include_str!("../data/soc1980.csv"),
-            KnownClassificationSystem::SOC2010 => include_str!("../data/soc2010.csv")             
-        };
-
-        let mut reader = Reader::from_reader(text_str.as_bytes());
-        let rows:Vec<StringRecord> = reader.records()
-            .filter_map(|r| r.ok())
-            .filter(filter)
-            .collect();
-
-        ClassificationSystem::from_stringrecords(rows)
+    fn resolve(&self) -> Self::Output{
+        CLASSIFICATION_SYSTEM_REGISTRY.get_classification_system(*self)
     }
 }
+
+impl FromStr for KnownClassificationSystem {
+    type Err = MyError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "soc1980" => Ok(Self::SOC1980),
+            "soc2010" => Ok(Self::SOC2010),
+            "sic1987" => Ok(Self::SIC1987),
+            "naics2022" => Ok(Self::NAICS2022),
+            _ => Err(MyError::ClassificationSystem(format!("Unknown classification system {}",s))),
+        }
+    }
+}
+
 
 
 
@@ -103,6 +112,7 @@ pub struct ClassificationSystem{
 /// Classification system use the following format:
 ///     code,title,Level,<...>
 impl ClassificationSystem {
+
     pub fn lookup_index(&self,code:&str) -> Option<u32>{
         self.lookup.get(code).copied()
     }
@@ -132,7 +142,7 @@ impl ClassificationSystem {
         ))
     }
 
-    fn len(&self) -> usize{
+    pub fn len(&self) -> usize{
         self.lookup.len()
     }
 
@@ -238,42 +248,28 @@ impl ClassificationSystem {
 
 }
 
-impl From<KnownClassificationSystem> for ClassificationSystem{
 
+impl From<KnownClassificationSystem> for ClassificationSystem{
     fn from(value: KnownClassificationSystem) -> Self {
-        let text_str = match value {
-            KnownClassificationSystem::SOC1980 => include_str!("../data/soc1980.csv"),
-            KnownClassificationSystem::SOC2010 => include_str!("../data/soc2010.csv")             
+        let text_bytes: &[u8] = match value {
+            KnownClassificationSystem::SOC1980 => include_bytes!("../data/soc1980.csv"),
+            KnownClassificationSystem::SOC2010 => include_bytes!("../data/soc2010.csv"),
+            KnownClassificationSystem::SIC1987 => include_bytes!("../data/sic1987.csv"),
+            KnownClassificationSystem::NAICS2022 => include_bytes!("../data/naics2022.csv"),
         };
 
-        let mut reader = Reader::from_reader(text_str.as_bytes());
+        // This will only panic at compile time IF there is a problem
+        // with the classification system.
+        let mut reader = Reader::from_reader(text_bytes);
         let rows:Vec<StringRecord> = reader.records()
-            .filter_map(|r| r.ok())
+            .enumerate()
+            .map(|(line,r)| r.unwrap_or_else(|e| panic!("Classfication Setup: malformed record on line {} in {:?} CSV {}",line+1,value,e.to_string())))
+//            .filter_map(|r| r.ok())
             .collect();
 
         Self::from_stringrecords(rows)
     }
 }
-
-/* 
-impl TryFrom<KnownClassificationSystem> for ClassificationSystem{
-    type Error=MyError;
-
-    fn try_from(value: KnownClassificationSystem) -> Result<Self, Self::Error> {
-        let text_str = match value {
-            KnownClassificationSystem::SOC1980 => include_str!("../data/soc1980.csv"),
-            KnownClassificationSystem::SOC2010 => include_str!("../data/soc2010.csv")             
-        };
-
-        let mut reader = Reader::from_reader(text_str.as_bytes());
-        let rows:Vec<StringRecord> = reader.records()
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(Self::from_stringrecords(rows))
-    }
-}
-*/
 
 #[derive(Debug,Deserialize)]
 struct ClassificationSystemRow{
@@ -293,14 +289,14 @@ pub struct Crosswalk{
 impl Crosswalk {
 
     fn new(value: KnownCrosswalk,source_cs:Arc<ClassificationSystem>,target_cs:Arc<ClassificationSystem>) -> Result<Self, MyError> {                    
-        let index_bytes= match value {
+        let index_bytes:&[u8]= match value {
             KnownCrosswalk::SOC1980SOC2010 => include_bytes!("../data/soc1980_soc2010.csv"),
+            KnownCrosswalk::SIC1987NAICS2022 => include_bytes!("../data/sic1987_naics2022.csv"),
         };
         let source_len = source_cs.len();
 
         let mut reader=Reader::from_reader(&index_bytes[..]);
         let index_mapping = reader.records()
-            .into_iter()
             .try_fold(
                 HashMap::with_capacity(source_len),
                  |mut acc: HashMap<u32, Vec<u32>>, rec: Result<StringRecord, csv::Error>| -> Result<HashMap<u32, Vec<u32>>, MyError> {
@@ -309,8 +305,8 @@ impl Crosswalk {
                     let source_code = &record[0];
                     let target_code = &record[1];
 
-                    let source_index = source_cs.lookup_index(source_code).ok_or(MyError::CacheError(format!("Code {}: does not exist ",source_code)))?;
-                    let target_index = target_cs.lookup_index(target_code).ok_or(MyError::CacheError(format!("Code {}: does not exist ",target_code)))?;
+                    let source_index = source_cs.lookup_index(source_code).ok_or(MyError::CacheError(format!("Crosswalk {:?}: Code {}: does not exist ",value,source_code)))?;
+                    let target_index = target_cs.lookup_index(target_code).ok_or(MyError::CacheError(format!("Crosswalk {:?}: Code {}: does not exist ",value,target_code)))?;
                     acc.entry(source_index).or_default().push(target_index);
 
                     Ok(acc)
@@ -333,13 +329,40 @@ impl Crosswalk {
             })
             .collect()
     }
+
+    pub fn crosswalk_into(&self, codes: &[&str], out: &mut Vec<u16>) {
+        codes.iter().for_each(|&code| {
+            self.source_cs.lookup_index(code)
+                .and_then(|src_idx| self.index_mapping.get(&src_idx))
+                .map(|v| v.iter())
+                .into_iter()
+                .flatten()
+                .for_each(|&i| out.push(i as u16));
+        });
+    }
 }
-
-
 
 #[derive(Debug,PartialEq, Eq,Hash,Clone,Copy)]
 pub enum KnownCrosswalk{
     SOC1980SOC2010,
+    SIC1987NAICS2022,
+}
+impl KnownCrosswalk {
+    pub fn find(from:KnownClassificationSystem,to:KnownClassificationSystem) -> Result<KnownCrosswalk,MyError>{
+        match (from,to) {
+            (KnownClassificationSystem::SOC1980,KnownClassificationSystem::SOC2010) => Ok(KnownCrosswalk::SOC1980SOC2010),
+            (KnownClassificationSystem::SIC1987,KnownClassificationSystem::NAICS2022) => Ok(KnownCrosswalk::SIC1987NAICS2022),
+            (a,b) => Err(MyError::Crosswalk(format!("Unknown Crosswalk {:?} to {:?}",a,b))),
+        }
+    }
+}
+
+impl Resolve for KnownCrosswalk{
+    type Output = Arc<Crosswalk>;
+
+    fn resolve(&self) -> Self::Output{
+        CLASSIFICATION_SYSTEM_REGISTRY.get_crosswalk(*self)
+    }
 }
 
 #[derive(Debug,Deserialize)]
@@ -371,8 +394,8 @@ mod tests {
 
     #[test]
     fn test_load(){
-        let soc1980 = ClassificationSystemRegistry::get_classification_system(KnownClassificationSystem::SOC1980);
-        let soc2010 = ClassificationSystemRegistry::get_classification_system(KnownClassificationSystem::SOC2010);
+        let soc1980 = CLASSIFICATION_SYSTEM_REGISTRY.get_classification_system(KnownClassificationSystem::SOC1980);
+        let soc2010 = CLASSIFICATION_SYSTEM_REGISTRY.get_classification_system(KnownClassificationSystem::SOC2010);
         assert_eq!(soc1980.len(),665);
         assert_eq!(soc2010.len(),840);
 
@@ -383,33 +406,8 @@ mod tests {
     }
 
     #[test]
-    fn test_file(){
-        let path = PathBuf::from("/Users/druss/Downloads/soc1980_all.csv");
-
-        let x = ClassificationSystem::from_csv_filtered(
-            path.to_string_lossy(),
-             |row| row.get(8).map_or(false, |v|v=="TRUE")
-        );
-        assert!(x.is_ok());
-        let x=x.unwrap();
-        println!("{:?}",x.lookup.get("9911"));
-        println!("{:?}",x.lookup.get("112"));
-
-        let c9991_index = x.lookup.get("9911");
-        let c112_index = x.lookup.get("112");
-        assert_eq!(c9991_index.copied(),Some(628));
-        assert_eq!(c112_index.copied(),Some(11));
-        let test_code = x.get_code_title(c9991_index.copied().unwrap());
-        println!("{:?}",test_code);
-
-        assert_eq!(Some(("9911", "GRADUATE ASSISTANT")),test_code);
-        let test_code = x.get_code_title(c112_index.copied().unwrap());
-        println!("{:?}",test_code);
-    }
-
-    #[test]
     fn test_kcs(){
-        let soc1980 = ClassificationSystemRegistry::get_classification_system(KnownClassificationSystem::SOC1980);
+        let soc1980 = CLASSIFICATION_SYSTEM_REGISTRY.get_classification_system (KnownClassificationSystem::SOC1980);
         let code = soc1980.get_code(0).unwrap();
         println!("{:?}",code);
         let title = soc1980.get_title(0).unwrap();
@@ -420,10 +418,8 @@ mod tests {
 
     #[test]
     fn test_crosswalk(){
-        let soc1980_soc2010 = ClassificationSystemRegistry::get_crosswalk(KnownCrosswalk::SOC1980SOC2010);
-        assert!(soc1980_soc2010.is_ok());
+        let soc1980_soc2010 = CLASSIFICATION_SYSTEM_REGISTRY.get_crosswalk(KnownCrosswalk::SOC1980SOC2010);
 
-        let soc1980_soc2010=soc1980_soc2010.unwrap();
         let r1 = soc1980_soc2010.crosswalk(&["111","1131"]);
         let r2 = soc1980_soc2010.crosswalk(&["110"]);
         println!("{:?}\n{:?}",r1,r2);
@@ -436,5 +432,11 @@ mod tests {
             println!("=== {:?}",res);
             res.iter().for_each(|&index| println!("\t\t{:?}",soc1980_soc2010.target_cs.get_code_title(index)));
         });
+    }
+
+    #[test]
+    fn test_len() {
+        assert_eq!(840usize,CLASSIFICATION_SYSTEM_REGISTRY.soc2010.len());
+        assert_eq!(1012usize,KnownClassificationSystem::NAICS2022.resolve().len());
     }
 }
