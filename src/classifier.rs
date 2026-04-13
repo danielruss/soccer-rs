@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use once_cell::sync::Lazy;
 use ort::{session::Session, value::Value};
@@ -220,6 +220,7 @@ impl EmbeddedJobDescriptions{
     }
 }
 
+#[derive(Debug)]
 pub struct CodedJobDescription{
     pub id:String,
     pub scored_code_index:Vec<Scored<usize>>
@@ -234,55 +235,60 @@ pub struct SoccerPipeline {
 }
 
 impl SoccerPipeline {
-    pub fn run(&mut self,job_descriptions:&[JobDescription]) -> Result<Vec<CodedJobDescription>,MyError>{
+    pub fn run(&mut self,job_descriptions:&[&JobDescription]) -> Result<Vec<CodedJobDescription>,MyError>{
+
+        // create the crosswalked input
+        let multihot_array = self.create_multihot_array2d(job_descriptions);
+
+        // preprocess the job descriptions
+        let preprocessed_job_descriptions = self.config.model_type.preprocess_batch(job_descriptions);
+
+        // Embed the text...
+        let embedded_jobs = self.embedder.embed_job_descriptions(preprocessed_job_descriptions)?;
+
+        // run soccer....
+        self.run_soccer(embedded_jobs, multihot_array)
+    }
+
+    fn create_multihot_array2d(&self,job_descriptions:&[&JobDescription]) -> Array2<f32> {
         let mut multihot:Array2<f32> = Array2::zeros( (job_descriptions.len(),self.config.output_dim()) );
         job_descriptions.iter().enumerate()
             .for_each(|(row_indx,job)|{
                 job.multihot_prior.iter().for_each(|&col_indx| multihot[[row_indx, col_indx as usize]]=1.0)
             });
-
-        let model_type = self.config.model_type;
-
-        let preprocessed_job_descriptions = model_type.preprocess_batch(job_descriptions);
-
-        // Embed the text...
-        let embedded_jobs = self.embedder.embed_job_descriptions(preprocessed_job_descriptions)?;
-        dbg!(&embedded_jobs);
-        // run soccer....
-        let results = {
-            let embedding_values = Value::from_array(embedded_jobs.embeddings)
-                .map(|v|v.into_dyn())
-                .map_err(|e| MyError::SoccerError(e.to_string()))?;
-            let multihot_values = Value::from_array(multihot)
-                .map(|v|v.into_dyn())
-                .map_err(|e| MyError::SoccerError(e.to_string()))?;
-            let input = ort::inputs![
-                "embedded_input" => embedding_values,
-                "crosswalked_inp" => multihot_values,
-            ];
-            let soccer_results = self.soccer_session.run(input)
-                .map_err(|e| MyError::SoccerError(e.to_string()))?;            
-            let (shape,slice) = soccer_results["soc2010_out"]
-                .try_extract_tensor::<f32>()
-                .map_err(|e| MyError::SoccerError(e.to_string()))?;
-            let view = ArrayView2::from_shape( (shape[0] as usize,shape[1] as usize), slice)
-                .map_err(|e| MyError::SoccerError(e.to_string()))?;
-            let sorted:Vec<CodedJobDescription> = view.axis_iter(Axis(0))
-                .zip(embedded_jobs.ids)
-                .map(|(row,id)|
-                    CodedJobDescription {
-                        id,
-                        scored_code_index: SoccerPipeline::argsort(row)
-                    }                    
-                )
-                .collect();
-            sorted
-        };
-
-        Ok(results)
+        multihot
     }
 
+    fn run_soccer(&mut self,embedded_jobs: EmbeddedJobDescriptions,xw_input:Array2<f32> ) -> Result<Vec<CodedJobDescription>,MyError> {
+        let embedding_values = Value::from_array(embedded_jobs.embeddings)
+            .map(|v| v.into_dyn())
+            .map_err(|e| MyError::SoccerError(e.to_string()))?;
+        let xw_values = Value::from_array(xw_input)
+                .map(|v|v.into_dyn())
+                .map_err(|e| MyError::SoccerError(e.to_string()))?;
+        let input = ort::inputs![
+                "embedded_input" => embedding_values,
+                "crosswalked_inp" => xw_values,
+        ];        
+        let soccer_results = self.soccer_session.run(input)
+            .map_err(|e| MyError::SoccerError(e.to_string()))?;
 
+        let (shape, slice) = soccer_results["soc2010_out"]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| MyError::SoccerError(e.to_string()))?;
+        let view = ArrayView2::from_shape((shape[0] as usize, shape[1] as usize), slice)
+            .map_err(|e| MyError::SoccerError(e.to_string()))?;
+
+        let sorted: Vec<CodedJobDescription> = view.axis_iter(Axis(0))
+            .zip(embedded_jobs.ids)
+            .map(|(row, id)| CodedJobDescription {
+                id,
+                scored_code_index: Self::argsort(row)
+            })
+            .collect();
+
+        Ok(sorted)
+    }
 
     pub fn argsort(row:ArrayView1<f32>) -> Vec<Scored<usize>> {
 
@@ -327,7 +333,7 @@ pub struct VersionedModel{
 
 pub trait PreprocessStrategy{
     fn preprocess(&self,job_description:&JobDescription)->PreprocessedJobDescription;
-    fn preprocess_batch(&self,job_descriptions:&[JobDescription]) -> Vec<PreprocessedJobDescription>;
+    fn preprocess_batch(&self,job_descriptions:&[&JobDescription]) -> Vec<PreprocessedJobDescription>;
 }
 
 
@@ -337,7 +343,17 @@ pub enum ModelType {
     SOCcerNET,
     CLIPS,
 }
+impl FromStr for ModelType{
+    type Err=MyError;
 
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "soccernet" => Ok(ModelType::SOCcerNET),
+            "clips" => Ok(ModelType::CLIPS),
+            sys => Err(MyError::BuilderError(format!("Unknown Model Type {}",sys)))
+        }
+    }
+}
 impl PreprocessStrategy for ModelType {
     fn preprocess(&self,job_description:&JobDescription)->PreprocessedJobDescription {
         let cloned_id = job_description.id.clone();
@@ -359,7 +375,7 @@ impl PreprocessStrategy for ModelType {
         PreprocessedJobDescription { id: cloned_id, cleaned_text }
     }
 
-    fn preprocess_batch(&self,job_descriptions:&[JobDescription]) -> Vec<PreprocessedJobDescription>{
+    fn preprocess_batch(&self,job_descriptions:&[&JobDescription]) -> Vec<PreprocessedJobDescription>{
         job_descriptions.iter()
             .map(|job| self.preprocess(job) )
             .collect()
@@ -439,11 +455,15 @@ mod tests {
             vec!["29-1069","29-1067","29-1063","29-1199","29-1011"]
         ];
 
-        let job_descriptions:Vec<JobDescription> = vec![
+        let job_descriptions: Vec<JobDescription> = vec![
             ("test01-1","plumber").into(),
             ("test01-2","doctor").into()
         ];
-        let res = runtime.run(&job_descriptions).unwrap();
+        let refs:Vec<&JobDescription> = job_descriptions
+            .iter()
+            .collect();
+
+        let res = runtime.run(&refs).unwrap();
         let soc2010= CLASSIFICATION_SYSTEM_REGISTRY.get_classification_system(KnownClassificationSystem::SOC2010);
         
         res.iter().enumerate().for_each(|(row,prediction)| {
@@ -494,6 +514,7 @@ mod tests {
             ("testjob-1","--ceo--","run company ").into(),
             ("testjob-2","doctor. ","    treat patients.  ").into()
         ];
+        let job_descriptions:Vec<&JobDescription> = job_descriptions.iter().collect();
 
         let res: Vec<CodedJobDescription> = runtime.run(&job_descriptions).unwrap();
         println!();

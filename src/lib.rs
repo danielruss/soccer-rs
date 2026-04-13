@@ -1,15 +1,16 @@
 #![allow(dead_code)]
-use std::{fmt::{Display, Formatter}, fs::File, io::{BufRead, BufReader}, path::Path, str::FromStr, sync::Arc};
-use csv::StringRecord;
+use std::{fmt::{Display, Formatter}, fs::File, io::{BufRead, BufReader}, path::Path};
+
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{from_reader, from_str};
 
-use crate::{classifier::{JobDescription, ModelConfig, ModelType}, crosswalk::{Crosswalk, KnownClassificationSystem, KnownCrosswalk, Resolve}, error::MyError};
+use crate::{classifier::ModelConfig, error::MyError, io::{CSVSchema, JobStream}};
 mod cache;
 mod classifier;
 mod crosswalk;
 mod error;
 mod preprocessing;
+mod io;
 
 #[derive(Debug,Deserialize)]
 pub struct SOCcerJobDescription{
@@ -80,109 +81,69 @@ pub fn load_jsonl<T:DeserializeOwned, P:AsRef<Path>>(path: P) -> Result<Vec<T>,S
     Ok(res)
 }
 
-
-
-struct CSVSchema {
-    id_col: Option<usize>,
-    text1_col: usize,
-    text2_col: Option<usize>,
-    prior_cols: Box<[(usize,Arc<Crosswalk>)]>
-}
-
-impl CSVSchema {
-    fn from_headers(headers: &StringRecord, config:&ModelConfig) -> Result<Self,MyError>{
-        let model_type = config.model_type;
-        let output_classfication = config.output_classification_system;
-        let id_column = "id";
-        let (text1_column,text2_column) = match model_type{
-            ModelType::SOCcerNET => ("jobtitle",Some("jobtask")),
-            ModelType::CLIPS => ("products_services",None),
-        };
-        
-        let mut id_col: Option<usize>=None;
-        let mut text1_col: Option<usize>=None;
-        let mut text2_col: Option<usize>=None;
-        let mut prior_cols: Vec<(usize, Arc<Crosswalk>)> = Vec::new();
-
-        headers.iter().enumerate().for_each(|(col,col_header)|{
-            let c = col_header.to_lowercase();
-            match c.as_ref() {
-                s if s==id_column => {id_col = Some(col);},
-                s if s == text1_column => {text1_col = Some(col);},
-                s if text2_column.map_or(false, |t2|t2==s) => { text2_col = Some(col);},
-                s => {
-                    KnownClassificationSystem::from_str(s)
-                        .and_then(|source| KnownCrosswalk::find(source,output_classfication) )
-                        .map(|kxw| { 
-                            let xw = kxw.resolve();
-                            prior_cols.push( (col,xw) ) 
-                        })
-                        .ok();
-                }
-            }
-        });
-
-        let text1_col = text1_col.ok_or_else(|| {
-            MyError::BuilderError(format!("CSV missing required column '{}'", text1_column))
-        })?;
-
-        let prior_cols = prior_cols.into_boxed_slice();
-        Ok(CSVSchema {id_col,text1_col,text2_col,prior_cols} )
-
-    }
-}
-
-pub fn load_csv<T:AsRef<str>>(content:T,model_config:&ModelConfig) -> Result<Vec<Result<(JobDescription,StringRecord),MyError>>,MyError>{
+pub fn load_csv_str<'a, T:AsRef<str> + ?Sized>(content:&'a T,model_config:&ModelConfig) -> 
+    Result<
+        io::JobStream<Box<dyn Iterator<Item=Result<csv::StringRecord,MyError>> + 'a>,CSVSchema,csv::StringRecord>,
+        MyError>
+    {
     let mut reader = csv::Reader::from_reader(content.as_ref().as_bytes());
-    let headers = reader.headers().map_err(|e|MyError::BuilderError(e.to_string()))?.clone();
+    let headers = reader.headers()
+        .map_err(|e|MyError::BuilderError(e.to_string()))?.clone();
 
-    let schema = CSVSchema::from_headers(&headers, &model_config)?;
-    Ok( reader.records().enumerate()
-        .map( |(row_number, rec)|{
-            let record = rec.map_err(|e| MyError::BuilderError(e.to_string()))?;
+    let mapper = CSVSchema::from_headers(&headers, model_config)?;
+    let records_iter = Box::new( reader.into_records()
+        .map(|r|r.map_err(|e| MyError::BuilderError(e.to_string())))
+    );
 
-            let id = schema.id_col
-                .and_then( |col| record.get(col))
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("row_{}",row_number + 1));
-
-            let text1 = record.get(schema.text1_col).unwrap_or_default().to_string();
-            let text2= schema.text2_col
-                .and_then(|col| record.get(col))
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-
-            let mut multihot_prior:Vec<u16> = Vec::new();
-            for (col_idx, xw) in schema.prior_cols.iter() {
-                if let Some(value) = record.get(*col_idx).filter(|s| !s.is_empty()) {
-                    xw.crosswalk_into(&[value], &mut multihot_prior);
-                }
-            }
-            let multihot_prior = multihot_prior.into_boxed_slice();
-
-            let job = JobDescription { id, text1, text2, multihot_prior };
-            Ok((job, record))
-        }).collect())
-
-
+    Ok(JobStream::new(records_iter,mapper))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::classifier::MODEL_CONFIG;
-
+    use crate::classifier::{JobDescription, MODEL_CONFIG, ModelType, SoccerBuilder, SoccerPipeline};
+    use itertools::{Either, Itertools};
     use super::*;
 
     #[test]
-    fn test_it(){
+    fn test_csv(){
         let config = MODEL_CONFIG.get_config(&ModelType::SOCcerNET, "1.0.0").unwrap();
-        let csv_data = "id,JobTitle,description,soc1980\n\
-                        1,Software Engineer,Writes code,111\n\
-                        2,Broken Row,\"Forgot to close quotes\",\n\
-                        3,Data Scientist,Analyzes data,";
-        let results = load_csv(csv_data, config).expect("The file structure should be valid");
-        assert_eq!(results.len(),3);
-        dbg!(results);
+        let classification_system = config.output_system();
+        let mut soccer = SoccerPipeline::build(config).expect("Problem building SOCcerNET");
+        let csv_data = "id,JobTitle,jobtask,soc1980\n\
+                        libtestcsv-1,Software Engineer,Writes code,111\n\
+                        libtestcsv-2,Broken Row,\"Forgot to close quotes\",\n\
+                        libtestcsv-3,Data Scientist,Analyzes data,\n
+                        libtestcsv-4,lawyer,save clients from jail,";
+        let n = 5;
+        let job_descriptions = load_csv_str(csv_data, config).expect("The file structure should be valid");
+
+        for chunk in &job_descriptions.into_iter().chunks(2){
+            let (successes, errors): (Vec<_>,Vec<_>) = chunk
+                .into_iter()
+                .partition_map( |(res,rec)| match res {
+                    Ok(jd) => Either::Left((jd,rec)),
+                    Err(e) => Either::Right((e,rec)),
+                } );
+
+            if !successes.is_empty(){
+                let (job_batch,og_input):(Vec<JobDescription>,Vec<csv::StringRecord>) = successes.into_iter().unzip();
+                let refs:Vec<&JobDescription> = job_batch.iter().collect();       
+                let results = soccer.run(&refs).unwrap();
+
+                results.iter().zip(og_input.iter())
+                    .for_each(| (job,sr)| {
+                    println!("{:?}:",sr);
+                    job.scored_code_index.iter().take(n)
+                        .for_each(|si| {
+                            let (code,title) = classification_system.get_code_title(si.0 as u32).unwrap();
+                            println!("\t{}\t{}\t{:4}",code,title,si.1)
+                        });
+                });
+            }
+            errors.iter().for_each(|(e, record)| {
+                // Here you have both the error and the record that caused it!
+                eprintln!("Skipping Record due to Error: {}\nRecord: {:?}", e, record);
+            });
+        }
     }
 }

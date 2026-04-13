@@ -11,6 +11,8 @@ pub enum MyError{
     ClassificationSystem(String),
     #[error("Crosswalk Error: {0}")]
     Crosswalk(String),
+    #[error("CSV Syntax error at line {line}: {source}")]
+    CSVSyntaxError { source: csv::Error, line: u64 },
     #[error("IO Error: {0}")]
     IOError(#[from] std::io::Error),
     #[error("Building Error: {0}")]
@@ -21,4 +23,11 @@ pub enum MyError{
     EmbeddingError(String),
     #[error("SOCcer Error: {0}")]
     SoccerError(String),
+}
+
+impl From<csv::Error> for MyError {
+    fn from(e: csv::Error) -> Self {
+        let line = e.position().map(|p| p.line()).unwrap_or(0);
+        MyError::CSVSyntaxError { line, source: e }
+    }
 }
