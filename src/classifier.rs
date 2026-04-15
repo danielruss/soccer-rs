@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
 
 use once_cell::sync::Lazy;
 use ort::{session::Session, value::Value};
@@ -56,6 +56,7 @@ pub struct ModelConfig{
     pub(crate) output_classification_system:KnownClassificationSystem,
     embedding_model:String,
     model_url:String,
+    model_output_name:String,
     embedding_config:EmbeddingConfig,
     pipeline_config:PipeLineConfig,
 }
@@ -83,17 +84,13 @@ pub struct Embedder{
 }
 impl Embedder {
     fn new(config:&ModelConfig) ->Result<Self,MyError>{
-        println!("in Embedder::new() => {:?}\nCreating API and getting model...",config.embedding_config);
         let embedding_config = config.embedding_config.clone();
-
-        println!("in Embedder::new() => {:?}\nCreating API and getting model...",config.embedding_model);
         let client = Api::new().unwrap();
         let repo = client.model(config.embedding_model.clone());
 
         // WARNING: This may change...
         let model_path = repo.get("onnx/model.onnx")?;
         let tokenizer_path = repo.get("tokenizer.json")?;
-        println!("{:?}\n{:?}",model_path,tokenizer_path);
 
         let mut tokenizer:Tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| MyError::CacheError(format!("Problem getting the Tokenizer cached at {:?}.\n\t{}",&tokenizer_path.to_str(),e.to_string())))?;
@@ -147,10 +144,10 @@ impl Embedder {
         
         Ok(pooled_array)
     }
-    fn embed_job_descriptions(&mut self,job_descriptions:Vec<PreprocessedJobDescription>) -> Result<EmbeddedJobDescriptions,MyError>{
-        let (ids,text):(Vec<String>,Vec<String>) = job_descriptions.into_iter()
+    fn embed_job_descriptions(&mut self,job_descriptions:Vec<PreprocessedJobDescription>) -> Result<EmbeddedJobDescriptions<'static>,MyError>{
+        let (ids,text):(Vec<Cow<'_,str>>,Vec<String>) = job_descriptions.into_iter()
             .map(|job| {
-                (job.id,job.cleaned_text)
+                (Cow::Owned(job.id),job.cleaned_text)
             }).unzip();
         let embeddings = self.embed_text(&text)?;
 
@@ -210,19 +207,19 @@ pub struct PreprocessedJobDescription{
 }
 
 #[derive(Debug)]
-pub struct EmbeddedJobDescriptions{
-    pub ids:Vec<String>,
+pub struct EmbeddedJobDescriptions<'a>{
+    pub ids:Vec<Cow<'a, str>>,
     pub embeddings:Array2<f32>,
 }
-impl EmbeddedJobDescriptions{
+impl<'a> EmbeddedJobDescriptions<'a>{
     pub fn len(&self)->usize{
         self.ids.len()
     }
 }
 
 #[derive(Debug)]
-pub struct CodedJobDescription{
-    pub id:String,
+pub struct CodedJobDescription<'a>{
+    pub id:Cow<'a, str>,
     pub scored_code_index:Vec<Scored<usize>>
 }
 
@@ -232,10 +229,37 @@ pub struct SoccerPipeline {
     pub soccer_session: Session,
 
     pub config: ModelConfig,
-}
+}    
 
 impl SoccerPipeline {
-    pub fn run(&mut self,job_descriptions:&[&JobDescription]) -> Result<Vec<CodedJobDescription>,MyError>{
+    pub fn predict_from_columns<'a>(&mut self,id:&[&'a str],text1:&[&'a str],text2:Option<&[&'a str]>,prior:&[Box<[u16]>]) -> Result<Vec<CodedJobDescription<'a>>,MyError>{
+        // create the crosswalked input
+        let multihot_array = self.create_multihot_array2d_col(prior);
+
+        // preprocess the job descriptions
+        let clean_text:Vec<String> = match text2 {
+            Some(t2) => text1.iter().zip(t2.iter()).map(|(txt1,txt2)| self.config.model_type.preprocess(txt1,Some(txt2))).collect(),
+            None => text1.iter().map(|txt1| self.config.model_type.preprocess(txt1, None)).collect()
+        };
+
+        let embeded_text: Array2<f32> = self.embedder.embed_text(&clean_text)?;
+        let embedded_jobs:EmbeddedJobDescriptions<'a> = EmbeddedJobDescriptions {
+            ids:id.iter().map(|&i| Cow::Borrowed(i)).collect(),
+            embeddings: embeded_text
+        };
+        self.run_soccer(embedded_jobs, multihot_array)
+    }
+
+    fn create_multihot_array2d_col(&self,prior:&[Box<[u16]>]) -> Array2<f32> {
+        let mut multihot:Array2<f32> = Array2::zeros( (prior.len(),self.config.output_dim()) );
+        prior.iter().enumerate()
+            .for_each(|(row_indx,job)|{
+                job.iter().for_each(|&col_indx| multihot[[row_indx, col_indx as usize]]=1.0)
+            });
+        multihot
+    }
+
+    pub fn run(&mut self,job_descriptions:&[&JobDescription]) -> Result<Vec<CodedJobDescription<'static>>,MyError>{
 
         // create the crosswalked input
         let multihot_array = self.create_multihot_array2d(job_descriptions);
@@ -259,7 +283,7 @@ impl SoccerPipeline {
         multihot
     }
 
-    fn run_soccer(&mut self,embedded_jobs: EmbeddedJobDescriptions,xw_input:Array2<f32> ) -> Result<Vec<CodedJobDescription>,MyError> {
+    fn run_soccer<'a>(&mut self,embedded_jobs: EmbeddedJobDescriptions<'a>,xw_input:Array2<f32> ) -> Result<Vec<CodedJobDescription<'a>>,MyError> {
         let embedding_values = Value::from_array(embedded_jobs.embeddings)
             .map(|v| v.into_dyn())
             .map_err(|e| MyError::SoccerError(e.to_string()))?;
@@ -273,7 +297,7 @@ impl SoccerPipeline {
         let soccer_results = self.soccer_session.run(input)
             .map_err(|e| MyError::SoccerError(e.to_string()))?;
 
-        let (shape, slice) = soccer_results["soc2010_out"]
+        let (shape, slice) = soccer_results[self.config.model_output_name.as_str()]
             .try_extract_tensor::<f32>()
             .map_err(|e| MyError::SoccerError(e.to_string()))?;
         let view = ArrayView2::from_shape((shape[0] as usize, shape[1] as usize), slice)
@@ -308,15 +332,11 @@ impl SoccerPipeline {
 impl SoccerBuilder for SoccerPipeline {
     fn build(config:&ModelConfig) -> Result<SoccerPipeline,MyError> {
         let embedder = Embedder::new(config)?;
-
-        println!("in SoccerRuntime::build() => {:?}",config.model_url);
         let soccer_model_path = Cache::get_onnx_from(&config.model_url)?;
         let soccer_session = Session::builder().map_err(|e| MyError::BuilderError(format!("SOCcer session E1: {}",e.to_string())))?
             .with_memory_pattern(true).map_err(|e| MyError::BuilderError(format!("SOCcer session E2: {}",e.to_string())))?
             .commit_from_file(soccer_model_path).map_err(|e| MyError::BuilderError(format!("SOCcer session E3: {}",e.to_string())))?;
     
-        println!("in SoccerRuntime::build() => {:?}",config.embedding_config.pooling);
-
         Ok( SoccerPipeline { embedder, soccer_session, config:config.clone()} )
     }
 }
@@ -332,7 +352,7 @@ pub struct VersionedModel{
 }
 
 pub trait PreprocessStrategy{
-    fn preprocess(&self,job_description:&JobDescription)->PreprocessedJobDescription;
+    fn preprocess<T:AsRef<str>>(&self,text1:T,text2:Option<T>)->String;
     fn preprocess_batch(&self,job_descriptions:&[&JobDescription]) -> Vec<PreprocessedJobDescription>;
 }
 
@@ -355,29 +375,26 @@ impl FromStr for ModelType{
     }
 }
 impl PreprocessStrategy for ModelType {
-    fn preprocess(&self,job_description:&JobDescription)->PreprocessedJobDescription {
-        let cloned_id = job_description.id.clone();
-
-        // for SOCcerNET text1 is the JobTitle text2 is the JobTasks
-        // for CLIPS text1 is the PS, text2 is None...
-        let cleaned_text1 = clean_free_text(&job_description.text1);
-        let cleaned_text2 = job_description.text2.as_ref().map(clean_free_text)
+    fn preprocess<T:AsRef<str>>(&self,text1:T,text2:Option<T>) -> String {
+        let cleaned_text1 = clean_free_text(&text1);
+        let cleaned_text2 = text2.as_ref().map(clean_free_text)
             .filter(|s| !s.is_empty()); // If it's "", it becomes None
-
-        let cleaned_text = match self {
+        
+        match self {
             ModelType::SOCcerNET => {
                 cleaned_text2.map(|ct2| format!("{} {}",cleaned_text1,ct2))
                     .unwrap_or(cleaned_text1)
             },
             ModelType::CLIPS => cleaned_text1
-        };
-
-        PreprocessedJobDescription { id: cloned_id, cleaned_text }
+        }
     }
 
     fn preprocess_batch(&self,job_descriptions:&[&JobDescription]) -> Vec<PreprocessedJobDescription>{
         job_descriptions.iter()
-            .map(|job| self.preprocess(job) )
+            .map(|job| {
+                let cleaned_text = self.preprocess(&job.text1,job.text2.as_ref()); 
+                PreprocessedJobDescription { id: job.id.clone(), cleaned_text }
+            })
             .collect()
     }
 }

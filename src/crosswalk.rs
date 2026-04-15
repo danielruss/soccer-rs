@@ -54,8 +54,8 @@ pub static CLASSIFICATION_SYSTEM_REGISTRY: Lazy<ClassificationSystemRegistry> = 
             .unwrap_or_else(|e| panic!("soc1980 -> soc2010 crosswalk is invalid: {e}"))
     );
     let sic1987_naics2022 = Arc::new(
-        Crosswalk::new(KnownCrosswalk::SOC1980SOC2010,soc1980.clone(),soc2010.clone())
-            .unwrap_or_else(|e| panic!("soc1980 -> soc2010 crosswalk is invalid: {e}"))
+        Crosswalk::new(KnownCrosswalk::SIC1987NAICS2022,sic1987.clone(),naics2022.clone())
+            .unwrap_or_else(|e| panic!("sic1987 -> naics2022 crosswalk is invalid: {e}"))
     );
 
 
@@ -311,7 +311,7 @@ impl Crosswalk {
 
                     Ok(acc)
             })?;
-        
+
         Ok(Crosswalk{
             source_cs,
             target_cs,
@@ -374,6 +374,10 @@ struct CrosswalkRow{
 
 #[cfg(test)]
 mod tests {
+    use std::u32;
+
+    use crate::{get_classification_system, get_crosswalk};
+
     use super::*;
 
 
@@ -432,11 +436,43 @@ mod tests {
             println!("=== {:?}",res);
             res.iter().for_each(|&index| println!("\t\t{:?}",soc1980_soc2010.target_cs.get_code_title(index)));
         });
+
+        println!("===== Testing SIC-> NAICS");
+        let sic1987_naics2022 = get_crosswalk("sic1987", "naics2022").unwrap();
+        dbg!(&sic1987_naics2022);
+        let r1 =sic1987_naics2022.crosswalk(&["7372"]);
+        r1.iter().for_each(|&res|{
+            println!("=== {:?}",res);
+            res.iter().for_each(|&index| println!("\t\t{:?}",soc1980_soc2010.target_cs.get_code_title(index)));
+        });
+
+        let mut my_vec: Vec<u16> = Vec::new();
+        sic1987_naics2022.crosswalk_into(&["7372"], &mut my_vec);
+        assert!(!my_vec.is_empty());
+    }
+
+    #[test]
+    fn test_xw2(){
+
+        let sic1987 = get_classification_system("sic1987").unwrap();
+        //let naics2022 = get_classification_system("naics2022").unwrap();
+        let sic1987_naics2022 = get_crosswalk("sic1987", "naics2022").unwrap();
+
+        
+        // the code 7372 exists in sic1987 is there a problem?
+        let s7372 = sic1987.lookup_index("7372");
+        assert!(s7372.is_some());
+        let s_indx = s7372.unwrap_or(u32::MAX);
+        assert_eq!(s_indx,866);
+        let xw_indx = sic1987_naics2022.index_mapping.get(&s_indx);
+        assert!(xw_indx.is_some());
+        let xw_indx = xw_indx.unwrap();
+        assert_eq!(xw_indx.len(),2);
     }
 
     #[test]
     fn test_len() {
         assert_eq!(840usize,CLASSIFICATION_SYSTEM_REGISTRY.soc2010.len());
-        assert_eq!(1012usize,KnownClassificationSystem::NAICS2022.resolve().len());
+        assert_eq!(689usize,KnownClassificationSystem::NAICS2022.resolve().len());
     }
 }

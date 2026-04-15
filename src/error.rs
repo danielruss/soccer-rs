@@ -23,6 +23,8 @@ pub enum MyError{
     EmbeddingError(String),
     #[error("SOCcer Error: {0}")]
     SoccerError(String),
+    #[error("Output Error: {0}")]
+    OutputError(String),
 }
 
 impl From<csv::Error> for MyError {

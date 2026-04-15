@@ -1,16 +1,20 @@
 #![allow(dead_code)]
-use std::{fmt::{Display, Formatter}, fs::File, io::{BufRead, BufReader}, path::Path};
+use std::{fmt::{Display, Formatter}, fs::File, io::{BufRead, BufReader}, path::Path, str::FromStr, sync::Arc};
 
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{from_reader, from_str};
 
-use crate::{classifier::ModelConfig, error::MyError, io::{CSVSchema, JobStream}};
+use crate::{classifier::ModelConfig, crosswalk::{CLASSIFICATION_SYSTEM_REGISTRY, ClassificationSystem, KnownClassificationSystem, KnownCrosswalk}, io::{CSVSchema, JobStream}};
 mod cache;
 mod classifier;
 mod crosswalk;
 mod error;
 mod preprocessing;
 mod io;
+
+pub use crate::crosswalk::Crosswalk;
+pub use crate::classifier::{CodedJobDescription,MODEL_CONFIG,ModelType,SoccerBuilder,SoccerPipeline};
+pub use crate::error::MyError;
 
 #[derive(Debug,Deserialize)]
 pub struct SOCcerJobDescription{
@@ -96,6 +100,18 @@ pub fn load_csv_str<'a, T:AsRef<str> + ?Sized>(content:&'a T,model_config:&Model
     );
 
     Ok(JobStream::new(records_iter,mapper))
+}
+
+pub fn get_classification_system<T:AsRef<str>>(system:T) -> Result<Arc<ClassificationSystem>,MyError>{
+    let classification_system = KnownClassificationSystem::from_str(system.as_ref())?;
+    Ok(CLASSIFICATION_SYSTEM_REGISTRY.get_classification_system(classification_system))
+}
+pub fn get_crosswalk<T1:AsRef<str>,T2:AsRef<str>>(system1:T1,system2:T2) -> Result<Arc<Crosswalk>,MyError>{
+    let known_xw = KnownCrosswalk::find(
+        KnownClassificationSystem::from_str(system1.as_ref())?, 
+        KnownClassificationSystem::from_str(system2.as_ref())?
+    )?;
+    Ok(CLASSIFICATION_SYSTEM_REGISTRY.get_crosswalk(known_xw))
 }
 
 #[cfg(test)]
