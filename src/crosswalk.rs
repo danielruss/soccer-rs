@@ -15,11 +15,15 @@ pub trait Resolve{
 #[derive(Debug)]
 pub struct ClassificationSystemRegistry{
     pub soc1980: Arc<ClassificationSystem>,
+    pub noc2011: Arc<ClassificationSystem>,
+    pub isco1988: Arc<ClassificationSystem>,
     pub soc2010: Arc<ClassificationSystem>,
     pub sic1987: Arc<ClassificationSystem>,
     pub naics2022: Arc<ClassificationSystem>,
 
     pub soc1980_soc2010: Arc<Crosswalk>,
+    pub noc2011_soc2010: Arc<Crosswalk>,
+    pub isco1988_soc2010: Arc<Crosswalk>,
     pub sic1987_naics2022: Arc<Crosswalk>,
 }
 
@@ -27,6 +31,8 @@ impl ClassificationSystemRegistry{
     pub fn get_classification_system(&self, classification_system:KnownClassificationSystem) -> Arc<ClassificationSystem>{
         match classification_system {
             KnownClassificationSystem::SOC1980 => self.soc1980.clone(),
+            KnownClassificationSystem::NOC2011 => self.noc2011.clone(),
+            KnownClassificationSystem::ISCO1988 => self.isco1988.clone(),
             KnownClassificationSystem::SOC2010 => self.soc2010.clone(),
             KnownClassificationSystem::SIC1987 => self.sic1987.clone(),
             KnownClassificationSystem::NAICS2022 => self.naics2022.clone(),
@@ -35,6 +41,8 @@ impl ClassificationSystemRegistry{
     pub fn get_crosswalk(&self, crosswalk:KnownCrosswalk) -> Arc<Crosswalk> {
         match crosswalk {
             KnownCrosswalk::SOC1980SOC2010 => self.soc1980_soc2010.clone(),
+            KnownCrosswalk::NOC2011SOC2010 => self.noc2011_soc2010.clone(),
+            KnownCrosswalk::ISCO1988SOC2010 => self.isco1988_soc2010.clone(),
             KnownCrosswalk::SIC1987NAICS2022 => self.sic1987_naics2022.clone(),
         }
     }
@@ -44,6 +52,8 @@ impl ClassificationSystemRegistry{
 pub static CLASSIFICATION_SYSTEM_REGISTRY: Lazy<ClassificationSystemRegistry> = Lazy::new(||{
 
     let soc1980 = Arc::new(ClassificationSystem::from(KnownClassificationSystem::SOC1980));
+    let noc2011 = Arc::new(ClassificationSystem::from(KnownClassificationSystem::NOC2011));
+    let isco1988 = Arc::new(ClassificationSystem::from(KnownClassificationSystem::ISCO1988));
     let soc2010 = Arc::new(ClassificationSystem::from(KnownClassificationSystem::SOC2010));
     let sic1987 = Arc::new(ClassificationSystem::from(KnownClassificationSystem::SIC1987));
     let naics2022 = Arc::new(ClassificationSystem::from(KnownClassificationSystem::NAICS2022));
@@ -53,13 +63,24 @@ pub static CLASSIFICATION_SYSTEM_REGISTRY: Lazy<ClassificationSystemRegistry> = 
         Crosswalk::new(KnownCrosswalk::SOC1980SOC2010,soc1980.clone(),soc2010.clone())
             .unwrap_or_else(|e| panic!("soc1980 -> soc2010 crosswalk is invalid: {e}"))
     );
+    let noc2011_soc2010 = Arc::new(
+        Crosswalk::new(KnownCrosswalk::NOC2011SOC2010,noc2011.clone(),soc2010.clone())
+            .unwrap_or_else(|e| panic!("noc2011 -> soc2010 crosswalk is invalid: {e}"))
+    );
+    let isco1988_soc2010 = Arc::new(
+        Crosswalk::new(KnownCrosswalk::ISCO1988SOC2010,isco1988.clone(),soc2010.clone())
+            .unwrap_or_else(|e| panic!("isco1988 -> soc2010 crosswalk is invalid: {e}"))
+    );
     let sic1987_naics2022 = Arc::new(
         Crosswalk::new(KnownCrosswalk::SIC1987NAICS2022,sic1987.clone(),naics2022.clone())
             .unwrap_or_else(|e| panic!("sic1987 -> naics2022 crosswalk is invalid: {e}"))
     );
 
 
-    ClassificationSystemRegistry { soc1980,soc2010,sic1987,naics2022,soc1980_soc2010,sic1987_naics2022 }
+    ClassificationSystemRegistry { 
+        soc1980,noc2011,isco1988,soc2010,sic1987,naics2022,
+        soc1980_soc2010,noc2011_soc2010,isco1988_soc2010,sic1987_naics2022 
+    }
 });
 
 
@@ -67,6 +88,10 @@ pub static CLASSIFICATION_SYSTEM_REGISTRY: Lazy<ClassificationSystemRegistry> = 
 pub enum KnownClassificationSystem{
     #[serde(rename = "soc1980")]
     SOC1980,
+    #[serde(rename = "noc2011")]
+    NOC2011,
+    #[serde(rename = "isco1988")]
+    ISCO1988,
     #[serde(rename = "soc2010")]
     SOC2010,
     #[serde(rename = "sic1987")]
@@ -88,6 +113,8 @@ impl FromStr for KnownClassificationSystem {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "soc1980" => Ok(Self::SOC1980),
+            "noc2011" => Ok(Self::NOC2011),
+            "isco1988" => Ok(Self::ISCO1988),
             "soc2010" => Ok(Self::SOC2010),
             "sic1987" => Ok(Self::SIC1987),
             "naics2022" => Ok(Self::NAICS2022),
@@ -253,6 +280,8 @@ impl From<KnownClassificationSystem> for ClassificationSystem{
     fn from(value: KnownClassificationSystem) -> Self {
         let text_bytes: &[u8] = match value {
             KnownClassificationSystem::SOC1980 => include_bytes!("../data/soc1980.csv"),
+            KnownClassificationSystem::NOC2011 => include_bytes!("../data/noc2011.csv"),
+            KnownClassificationSystem::ISCO1988 => include_bytes!("../data/isco1988.csv"),
             KnownClassificationSystem::SOC2010 => include_bytes!("../data/soc2010.csv"),
             KnownClassificationSystem::SIC1987 => include_bytes!("../data/sic1987.csv"),
             KnownClassificationSystem::NAICS2022 => include_bytes!("../data/naics2022.csv"),
@@ -291,6 +320,8 @@ impl Crosswalk {
     fn new(value: KnownCrosswalk,source_cs:Arc<ClassificationSystem>,target_cs:Arc<ClassificationSystem>) -> Result<Self, MyError> {                    
         let index_bytes:&[u8]= match value {
             KnownCrosswalk::SOC1980SOC2010 => include_bytes!("../data/soc1980_soc2010.csv"),
+            KnownCrosswalk::NOC2011SOC2010 => include_bytes!("../data/noc2011_soc2010.csv"),
+            KnownCrosswalk::ISCO1988SOC2010 => include_bytes!("../data/isco1988_soc2010.csv"),
             KnownCrosswalk::SIC1987NAICS2022 => include_bytes!("../data/sic1987_naics2022.csv"),
         };
         let source_len = source_cs.len();
@@ -345,12 +376,16 @@ impl Crosswalk {
 #[derive(Debug,PartialEq, Eq,Hash,Clone,Copy)]
 pub enum KnownCrosswalk{
     SOC1980SOC2010,
+    NOC2011SOC2010,
+    ISCO1988SOC2010,
     SIC1987NAICS2022,
 }
 impl KnownCrosswalk {
     pub fn find(from:KnownClassificationSystem,to:KnownClassificationSystem) -> Result<KnownCrosswalk,MyError>{
         match (from,to) {
             (KnownClassificationSystem::SOC1980,KnownClassificationSystem::SOC2010) => Ok(KnownCrosswalk::SOC1980SOC2010),
+            (KnownClassificationSystem::NOC2011,KnownClassificationSystem::SOC2010) => Ok(KnownCrosswalk::NOC2011SOC2010),
+            (KnownClassificationSystem::ISCO1988,KnownClassificationSystem::SOC2010) => Ok(KnownCrosswalk::ISCO1988SOC2010),
             (KnownClassificationSystem::SIC1987,KnownClassificationSystem::NAICS2022) => Ok(KnownCrosswalk::SIC1987NAICS2022),
             (a,b) => Err(MyError::Crosswalk(format!("Unknown Crosswalk {:?} to {:?}",a,b))),
         }
@@ -469,7 +504,24 @@ mod tests {
         let xw_indx = xw_indx.unwrap();
         assert_eq!(xw_indx.len(),2);
     }
+    #[test]
+    fn test_xw3(){
 
+        let noc2011 = get_classification_system("noc2011").unwrap();
+        //let naics2022 = get_classification_system("naics2022").unwrap();
+        let noc2011_soc2010 = get_crosswalk("noc2011", "soc2010").unwrap();
+
+        
+        // the code 0012 exists in NOC is there a problem?
+        let n0012 = noc2011.lookup_index("0012");
+        assert!(n0012.is_some());
+        let s_indx = n0012.unwrap_or(u32::MAX);
+        assert_eq!(s_indx,866);
+        let xw_indx = noc2011_soc2010.index_mapping.get(&s_indx);
+        assert!(xw_indx.is_some());
+        let xw_indx = xw_indx.unwrap();
+        assert_eq!(xw_indx.len(),2);
+    }
     #[test]
     fn test_len() {
         assert_eq!(840usize,CLASSIFICATION_SYSTEM_REGISTRY.soc2010.len());
