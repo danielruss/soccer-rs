@@ -182,25 +182,7 @@ pub fn run_soccer_job(
         None => MODEL_CONFIG.get_default_version(&ModelType::SOCcerNET).ok_or_else(||MyError::SoccerError(format!("Unable to get either the requested or default version of SOCcer: \n\trequested version: {}",version)))?
     };
 
-    let jd = [job_description];
-    let mut soccer = SoccerPipeline::build(config)?;
-    let results = soccer.run(&jd)?;
-    let result = results
-        .get(0)
-        .ok_or_else(|| MyError::SoccerError("No Result returned from SOCcer".to_string()))?;
-    let classification_system = config.output_system();
-
-    let result: Vec<SOCcerResult> = result
-        .scored_code_index
-        .iter()
-        .take(n)
-        .map(|si| {
-            let (code, title) = classification_system.get_code_title(si.0 as u32).unwrap();
-            println!("\t{}\t{}\t{:4}", code, title, si.1);
-            SOCcerResult::from((code, title, si.1))
-        })
-        .collect();
-    Ok(result.into_boxed_slice())
+    run_job(job_description, n, config)
 }
 
 pub fn run_clips_job(
@@ -213,15 +195,18 @@ pub fn run_clips_job(
         None => MODEL_CONFIG.get_default_version(&ModelType::CLIPS).ok_or_else(||MyError::SoccerError(format!("Unable to get either the requested or default version of SOCcer: \n\trequested version: {}",version)))?
     };
 
-    let jd = [job_description];
+    run_job(job_description, n, config)
+}
+fn run_job(
+    job_description: &JobDescription,
+    n: usize,
+    config: &ModelConfig,
+) -> Result<Box<[SOCcerResult]>, MyError> {
     let mut soccer = SoccerPipeline::build(config)?;
-    let results = soccer.run(&jd)?;
-    let result = results
-        .get(0)
-        .ok_or_else(|| MyError::SoccerError("No Result returned from SOCcer".to_string()))?;
+    let results = soccer.run1(&job_description)?;
     let classification_system = config.output_system();
 
-    let result: Vec<SOCcerResult> = result
+    let result: Vec<SOCcerResult> = results
         .scored_code_index
         .iter()
         .take(n)

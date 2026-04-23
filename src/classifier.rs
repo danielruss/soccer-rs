@@ -259,6 +259,16 @@ impl SoccerPipeline {
         multihot
     }
 
+    pub fn run1(&mut self,job_description:&JobDescription) -> Result<CodedJobDescription<'static>,MyError>{
+        let jobs = &[job_description];
+        let multihot_array = self.create_multihot_array2d(jobs);
+        let preprocessed_job_descriptions = self.config.model_type.preprocess_batch(jobs);
+        let embedded_jobs = self.embedder.embed_job_descriptions(preprocessed_job_descriptions)?;
+
+        self.run_soccer(embedded_jobs, multihot_array)
+            .and_then(|vec| vec.into_iter().next().ok_or(MyError::SoccerError("No Value returned".to_string())))
+
+        }
     pub fn run(&mut self,job_descriptions:&[&JobDescription]) -> Result<Vec<CodedJobDescription<'static>>,MyError>{
 
         // create the crosswalked input
