@@ -1,6 +1,6 @@
 [package]
 name = "soccer-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Daniel Russ <druss@mail.nih.gov>"]
 description = "Occupation and industry coding for epidemiologic studies and more"
