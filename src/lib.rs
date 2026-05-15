@@ -180,9 +180,9 @@ impl From<(&str, &str, f32)> for SOCcerResult {
 ///
 /// For a CLIPS Job
 /// Text1 = Products Made/Services provided, Text2 = None
-pub fn embed_single_job(
-    text1: &str,
-    text2: Option<&str>,
+pub fn embed_jobs(
+    text1: &[&str],
+    text2: Option<&[&str]>,
 ) -> Result<EmbeddedJobDescriptions<'static>, MyError> {
     // SOCcerNET and CLIPS both use the same embeddings.
     // TO DO: This really should take a version just
@@ -192,13 +192,18 @@ pub fn embed_single_job(
     let mut pipeline = SoccerPipeline::build(config)?;
 
     // create a JobDescription...
-    let jd: JobDescription = match text2 {
-        Some(t2) => ("id", text1, t2).into(),
-        None => ("id", text1).into(),
+    let jd: Vec<JobDescription> = match text2 {
+        Some(t2) => text1
+            .iter()
+            .zip(t2.iter())
+            .map(|(&tx1, &tx2)| ("id", tx1, tx2).into())
+            .collect(),
+        None => text1.iter().map(|&tx1| ("id", tx1).into()).collect(),
     };
 
-    let jd = &[&jd];
-    pipeline.embed_only(jd)
+    let jd1 = jd.iter().collect::<Vec<&JobDescription>>();
+    let jd1 = jd1.as_slice();
+    pipeline.embed_only(jd1)
 }
 
 pub fn run_soccer_job(
@@ -312,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_embed() {
-        let doctor: EmbeddedJobDescriptions<'_> = embed_single_job("doctor", Some("")).unwrap();
+        let doctor: EmbeddedJobDescriptions<'_> = embed_jobs(&["doctor"], Some(&[""])).unwrap();
         assert_eq!(doctor.embeddings.shape(), &[1, 384]);
 
         // 2. Precise float comparison
