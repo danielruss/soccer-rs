@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{from_reader, from_str};
 
 use crate::{
-    classifier::ModelConfig,
+    classifier::EmbeddedJobDescriptions,
     crosswalk::{
         CLASSIFICATION_SYSTEM_REGISTRY, ClassificationSystem, KnownClassificationSystem,
         KnownCrosswalk,
@@ -28,7 +28,8 @@ mod io;
 mod preprocessing;
 
 pub use crate::classifier::{
-    CodedJobDescription, JobDescription, MODEL_CONFIG, ModelType, SoccerBuilder, SoccerPipeline,
+    CodedJobDescription, JobDescription, MODEL_CONFIG, ModelConfig, ModelType, PreprocessStrategy,
+    PreprocessedJobDescription, SoccerBuilder, SoccerPipeline,
 };
 pub use crate::crosswalk::Crosswalk;
 pub use crate::error::MyError;
@@ -173,6 +174,33 @@ impl From<(&str, &str, f32)> for SOCcerResult {
     }
 }
 
+/// Only Embed the job
+/// For a SOCcerNET Job.  
+/// Text1 = JobTitle, Text2 = Some(Job Task)
+///
+/// For a CLIPS Job
+/// Text1 = Products Made/Services provided, Text2 = None
+pub fn embed_single_job(
+    text1: &str,
+    text2: Option<&str>,
+) -> Result<EmbeddedJobDescriptions<'static>, MyError> {
+    // SOCcerNET and CLIPS both use the same embeddings.
+    // TO DO: This really should take a version just
+    let config = MODEL_CONFIG
+        .get_default_version(&ModelType::SOCcerNET)
+        .ok_or_else(|| MyError::BuilderError("SOCcerNET not configured properly".to_string()))?;
+    let mut pipeline = SoccerPipeline::build(config)?;
+
+    // create a JobDescription...
+    let jd: JobDescription = match text2 {
+        Some(t2) => ("id", text1, t2).into(),
+        None => ("id", text1).into(),
+    };
+
+    let jd = &[&jd];
+    pipeline.embed_only(jd)
+}
+
 pub fn run_soccer_job(
     job_description: &JobDescription,
     version: &str,
@@ -227,6 +255,7 @@ mod tests {
         JobDescription, MODEL_CONFIG, ModelType, SoccerBuilder, SoccerPipeline,
     };
     use itertools::{Either, Itertools};
+    use ndarray::s;
 
     #[test]
     fn test_csv() {
@@ -271,5 +300,35 @@ mod tests {
                 eprintln!("Skipping Record due to Error: {}\nRecord: {:?}", e, record);
             });
         }
+    }
+
+    fn arrays_approx_eq(actual: &[f32], expected: &[f32], tol: f32) -> bool {
+        actual.len() == expected.len()
+            && actual
+                .iter()
+                .zip(expected.iter())
+                .all(|(a, e)| (a - e).abs() < tol)
+    }
+
+    #[test]
+    fn test_embed() {
+        let doctor: EmbeddedJobDescriptions<'_> = embed_single_job("doctor", Some("")).unwrap();
+        assert_eq!(doctor.embeddings.shape(), &[1, 384]);
+
+        // 2. Precise float comparison
+        let expected_embeddings = [
+            0.008760690689086914,
+            0.06533126533031464,
+            0.06876762956380844,
+            -0.0021495274268090725,
+            0.008127749897539616,
+        ];
+        let actual = doctor.embeddings.slice(s![0, 0..5]);
+
+        assert!(arrays_approx_eq(
+            actual.as_slice().unwrap(),
+            &expected_embeddings,
+            1e-5
+        ));
     }
 }

@@ -232,6 +232,13 @@ pub struct SoccerPipeline {
 }    
 
 impl SoccerPipeline {
+    pub fn embed_only(&mut self,job_descriptions:&[&JobDescription]) -> Result<EmbeddedJobDescriptions<'static>,MyError>{
+        // still need to clean the job description...
+        let preprocessed_job_descriptions = self.config.model_type.preprocess_batch(job_descriptions);
+
+        self.embedder.embed_job_descriptions(preprocessed_job_descriptions)
+    }
+
     pub fn predict_from_columns<'a>(&mut self,id:&[&'a str],text1:&[&'a str],text2:Option<&[&'a str]>,prior:&[Box<[u16]>]) -> Result<Vec<CodedJobDescription<'a>>,MyError>{
         // create the crosswalked input
         let multihot_array = self.create_multihot_array2d_col(prior);
