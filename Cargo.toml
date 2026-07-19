@@ -1,6 +1,6 @@
 [package]
 name = "soccer-rs"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 authors = ["Daniel Russ <druss@mail.nih.gov>"]
 description = "Occupation and industry coding for epidemiologic studies and more"
@@ -20,5 +20,4 @@ thiserror = "2.0.18"
 tokenizers = "0.22.2"
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-rustls", "copy-dylibs", "api-24",],}
 hf-hub = { version = "0.5.0", default-features = false, features = ["ureq", "rustls-tls"] }
-reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls"] }
-
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls-no-provider"] }
