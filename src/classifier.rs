@@ -3,13 +3,69 @@
 use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
 
 use once_cell::sync::Lazy;
-use ort::{session::Session, value::Value};
+use ort::{session::{builder::SessionBuilder, Session}, value::Value};
 use serde::Deserialize;
 use hf_hub::api::sync::Api;
 use tokenizers::{Encoding, PaddingParams, Tokenizer};
 use ndarray::{Array2, Array3, ArrayView1, ArrayView2, ArrayView3, Axis};
 
 use crate::{cache::Cache, crosswalk::{CLASSIFICATION_SYSTEM_REGISTRY, ClassificationSystem, KnownClassificationSystem}, error::MyError, preprocessing::clean_free_text};
+
+fn initialize_ort_backend() -> Result<(), MyError> {
+    #[cfg(any(
+        feature = "force-candle",
+        all(target_os = "windows", target_env = "gnu"),
+        all(target_os = "macos", target_arch = "x86_64")
+    ))]
+    {
+        if crate::dynamic_onnx_runtime_initialized() {
+            return Ok(());
+        }
+
+        static INITIALIZED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*INITIALIZED.get_or_init(|| ort::set_api(ort_candle::api())) {
+            return Err(MyError::BuilderError(
+                "Could not initialize the ort-candle backend before using ORT".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn configure_session_builder(builder: SessionBuilder, error_prefix: &str) -> Result<SessionBuilder, MyError> {
+    #[cfg(any(
+        feature = "force-candle",
+        all(target_os = "windows", target_env = "gnu"),
+        all(target_os = "macos", target_arch = "x86_64")
+    ))]
+    {
+        let _ = error_prefix;
+        Ok(builder)
+    }
+
+    #[cfg(not(any(
+        feature = "force-candle",
+        all(target_os = "windows", target_env = "gnu"),
+        all(target_os = "macos", target_arch = "x86_64")
+    )))]
+    {
+        let builder = builder
+            .with_memory_pattern(true)
+            .map_err(|e| MyError::BuilderError(format!("{error_prefix}: {e}")))?;
+
+        #[cfg(all(feature = "coreml", target_os = "macos", target_arch = "aarch64"))]
+        let builder = builder
+            .with_execution_providers([
+                ort::ep::CoreML::default()
+                    .with_compute_units(ort::ep::coreml::ComputeUnits::All)
+                    .build(),
+            ])
+            .map_err(|e| MyError::BuilderError(format!("{error_prefix} (CoreML): {e}")))?;
+
+        Ok(builder)
+    }
+}
 
 
 // Private functions that takes a Vec<Encoding> (more generally as a slice) and returns parts
@@ -100,8 +156,9 @@ impl Embedder {
                 ..Default::default()
             }));
 
-        let embedding_session = Session::builder().map_err(|e| MyError::BuilderError(format!("Embedding session E1: {}",e.to_string())))?
-            .with_memory_pattern(true).map_err(|e| MyError::BuilderError(format!("Embedding session E2: {}",e.to_string())))?
+        let embedding_session_builder = Session::builder()
+            .map_err(|e| MyError::BuilderError(format!("Embedding session E1: {e}")))?;
+        let embedding_session = configure_session_builder(embedding_session_builder, "Embedding session E2")?
             .commit_from_file(model_path).map_err(|e| MyError::BuilderError(format!("Emedding session E3: {}",e.to_string())))?;
 
         
@@ -348,10 +405,12 @@ impl SoccerPipeline {
 
 impl SoccerBuilder for SoccerPipeline {
     fn build(config:&ModelConfig) -> Result<SoccerPipeline,MyError> {
+        initialize_ort_backend()?;
         let embedder = Embedder::new(config)?;
         let soccer_model_path = Cache::get_onnx_from(&config.model_url)?;
-        let soccer_session = Session::builder().map_err(|e| MyError::BuilderError(format!("SOCcer session E1: {}",e.to_string())))?
-            .with_memory_pattern(true).map_err(|e| MyError::BuilderError(format!("SOCcer session E2: {}",e.to_string())))?
+        let soccer_session_builder = Session::builder()
+            .map_err(|e| MyError::BuilderError(format!("SOCcer session E1: {e}")))?;
+        let soccer_session = configure_session_builder(soccer_session_builder, "SOCcer session E2")?
             .commit_from_file(soccer_model_path).map_err(|e| MyError::BuilderError(format!("SOCcer session E3: {}",e.to_string())))?;
     
         Ok( SoccerPipeline { embedder, soccer_session, config:config.clone()} )
@@ -512,6 +571,15 @@ mod tests {
             .zip(expected_codes.iter())
             .enumerate()
             .for_each(|(batch_idx, ((actual_row, exp_scores), exp_codes))| {
+                let score_tolerance = if cfg!(all(
+                    feature = "coreml",
+                    target_os = "macos",
+                    target_arch = "aarch64"
+                )) {
+                    0.001
+                } else {
+                    0.0001
+                };
                 actual_row.scored_code_index.iter()
                     .take(5)
                     .zip(exp_scores.iter())
@@ -519,10 +587,10 @@ mod tests {
                     .for_each(|((scored_index, &exp_score), &exp_code)| {
                         let acutal_index = scored_index.0;
                         let actual_score=scored_index.1;
-                        // 1. Check the Score (Tolerance 0.0001)
+                        // CoreML may use lower-precision GPU operations than the CPU backend.
                         let diff = (actual_score - exp_score).abs();
                         assert!(
-                            diff < 0.0001,
+                            diff < score_tolerance,
                             "Batch {batch_idx} score mismatch! Actual: {actual_score}, Expected: {exp_score} (diff: {diff})"
                         );
 

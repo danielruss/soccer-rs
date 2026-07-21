@@ -34,6 +34,135 @@ pub use crate::classifier::{
 pub use crate::crosswalk::Crosswalk;
 pub use crate::error::MyError;
 
+#[cfg(any(
+    all(target_os = "windows", target_env = "gnu"),
+    all(target_os = "macos", target_arch = "x86_64")
+))]
+struct DynamicOnnxRuntime {
+    path: std::path::PathBuf,
+    _library: libloading::Library,
+}
+
+#[cfg(any(
+    all(target_os = "windows", target_env = "gnu"),
+    all(target_os = "macos", target_arch = "x86_64")
+))]
+static DYNAMIC_ONNX_RUNTIME: std::sync::Mutex<Option<DynamicOnnxRuntime>> =
+    std::sync::Mutex::new(None);
+
+/// Loads a caller-provided ONNX Runtime dynamic library.
+///
+/// This is required before constructing a [`SoccerPipeline`] on Windows GNU
+/// and Intel macOS when the caller wants to use native ONNX Runtime. Python
+/// and R wrappers should bundle the appropriate runtime library, resolve its
+/// installed absolute path, and call this function during package loading.
+/// Calling it repeatedly with the same path is allowed.
+#[cfg(any(
+    all(target_os = "windows", target_env = "gnu"),
+    all(target_os = "macos", target_arch = "x86_64")
+))]
+pub fn initialize_onnx_runtime(path: impl AsRef<Path>) -> Result<(), MyError> {
+    let path = path.as_ref().canonicalize().map_err(|error| {
+        MyError::BuilderError(format!(
+            "Could not resolve ONNX Runtime library '{}': {error}",
+            path.as_ref().display()
+        ))
+    })?;
+
+    let mut runtime = DYNAMIC_ONNX_RUNTIME.lock().map_err(|_| {
+        MyError::BuilderError("ONNX Runtime initialization lock was poisoned".to_string())
+    })?;
+    if let Some(initialized_runtime) = runtime.as_ref() {
+        return if initialized_runtime.path == path {
+            Ok(())
+        } else {
+            Err(MyError::BuilderError(format!(
+                "ONNX Runtime is already initialized from '{}'; cannot reinitialize it from '{}'",
+                initialized_runtime.path.display(),
+                path.display()
+            )))
+        };
+    }
+
+    let library = unsafe { libloading::Library::new(&path) }.map_err(|error| {
+        MyError::BuilderError(format!(
+            "Could not load ONNX Runtime library '{}': {error}",
+            path.display()
+        ))
+    })?;
+
+    let get_api_base: libloading::Symbol<
+        unsafe extern "system" fn() -> *const ort::sys::OrtApiBase,
+    > = unsafe { library.get(b"OrtGetApiBase") }.map_err(|error| {
+        MyError::BuilderError(format!(
+            "ONNX Runtime library '{}' does not export OrtGetApiBase: {error}",
+            path.display()
+        ))
+    })?;
+    let api_base = unsafe { get_api_base() };
+    if api_base.is_null() {
+        return Err(MyError::BuilderError(
+            "ONNX Runtime returned a null API base".to_string(),
+        ));
+    }
+
+    let version = unsafe { std::ffi::CStr::from_ptr(((*api_base).GetVersionString)()) }
+        .to_string_lossy();
+    let api = unsafe { ((*api_base).GetApi)(ort::sys::ORT_API_VERSION) };
+    if api.is_null() {
+        return Err(MyError::BuilderError(format!(
+            "ONNX Runtime '{version}' does not provide the required API version {}",
+            ort::sys::ORT_API_VERSION
+        )));
+    }
+
+    if !ort::set_api(unsafe { (*api).clone() }) {
+        return Err(MyError::BuilderError(
+            "ONNX Runtime was already used before its dynamic library was initialized".to_string(),
+        ));
+    }
+
+    *runtime = Some(DynamicOnnxRuntime {
+        path,
+        _library: library,
+    });
+    Ok(())
+}
+
+/// Dynamic loading is only needed on the targets without a statically linked
+/// ONNX Runtime. Keeping this symbol available makes wrapper code portable.
+#[cfg(not(any(
+    all(target_os = "windows", target_env = "gnu"),
+    all(target_os = "macos", target_arch = "x86_64")
+)))]
+pub fn initialize_onnx_runtime(_path: impl AsRef<Path>) -> Result<(), MyError> {
+    Err(MyError::BuilderError(
+        "A caller-provided ONNX Runtime library is only supported on Windows GNU and Intel macOS"
+            .to_string(),
+    ))
+}
+
+pub(crate) fn dynamic_onnx_runtime_initialized() -> bool {
+    #[cfg(any(
+        all(target_os = "windows", target_env = "gnu"),
+        all(target_os = "macos", target_arch = "x86_64")
+    ))]
+    {
+        DYNAMIC_ONNX_RUNTIME
+            .lock()
+            .map(|runtime| runtime.is_some())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(any(
+        all(target_os = "windows", target_env = "gnu"),
+        all(target_os = "macos", target_arch = "x86_64")
+    )))]
+    {
+        false
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SOCcerJobDescription {
     #[serde(rename = "Id")]
