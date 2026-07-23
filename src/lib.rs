@@ -100,13 +100,13 @@ pub fn load_jsonl<T: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<Vec<T>
         .enumerate()
         .filter_map(|(line, row)| {
             let line_string = row
-                .map_err(|e| eprintln!("JSON error line:{} {}", line, e.to_string()))
+                .map_err(|e| tracing::warn!("JSON error line:{} {}", line, e))
                 .ok()?;
             if line_string.trim().is_empty() {
                 return None;
             }
             from_str(&line_string)
-                .map_err(|e| eprintln!("Deserialization error line:{} {}", line, e.to_string()))
+                .map_err(|e| tracing::warn!("Deserialization error line:{} {}", line, e))
                 .ok()?
         })
         .collect();
@@ -246,7 +246,6 @@ fn run_job(
         .take(n)
         .map(|si| {
             let (code, title) = classification_system.get_code_title(si.0 as u32).unwrap();
-            println!("\t{}\t{}\t{:4}", code, title, si.1);
             SOCcerResult::from((code, title, si.1))
         })
         .collect();
