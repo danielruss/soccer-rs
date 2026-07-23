@@ -444,16 +444,7 @@ pub static MODEL_CONFIG: Lazy<StartupConfig> = Lazy::new(||{
         .expect("Crate Internal Configuration Error: Failed to parse classifier configuration file.")
 });
 
-pub fn display_soccer_results(results:Vec<CodedJobDescription>,n:usize,results_coding_system:Arc<ClassificationSystem>){
-    results.iter().for_each( |job| {
-        print!("{}",job.id);
-        job.scored_code_index.iter().take(n).for_each(|scored_index| {
-            let (cde,title) = results_coding_system.get_code_title(scored_index.0 as u32).unwrap();
-            print!("{}  {:10.10}  {:0.4}\t",cde,title,scored_index.1);
-        });
-        println!("");
-    });
-}
+
 
 
 #[cfg(test)]
@@ -461,7 +452,17 @@ mod tests {
     use super::*;
     use crate::crosswalk::{CLASSIFICATION_SYSTEM_REGISTRY, KnownClassificationSystem};
 
-
+    fn display_soccer_results(results:Vec<CodedJobDescription>,n:usize,results_coding_system:Arc<ClassificationSystem>){
+        results.iter().for_each( |job| {
+            print!("{}",job.id);
+            job.scored_code_index.iter().take(n).for_each(|scored_index| {
+                let (cde,title) = results_coding_system.get_code_title(scored_index.0 as u32).unwrap();
+                print!("{}  {:10.10}  {:0.4}\t",cde,title,scored_index.1);
+            });
+            println!("");
+        });
+    }
+    
     #[test]
     fn test_load(){
         let config = MODEL_CONFIG.get_config(&ModelType::SOCcerNET, "1.0.0");
