@@ -46,11 +46,8 @@ impl Cache {
 
     // download using GET in one block...
     pub(crate) fn cache_text_from(url: &str) -> Result<PathBuf, MyError> {
-        println!("\n\n");
-
         let cached_file = Cache::get_cached_filename(url)?;
         if !cached_file.exists() {
-            println!("... downloading file from {}", url);
             Self::ensure_crypto_provider();
             let mut file =
                 File::create(&cached_file).map_err(|e| MyError::CacheError(e.to_string()))?;
@@ -62,8 +59,6 @@ impl Cache {
             // write the text to the file...
             file.write_all(text.as_bytes())
                 .map_err(|e| MyError::CacheError(e.to_string()))?;
-        } else {
-            println!("... using cached file {:?}", cached_file);
         }
 
         Ok(cached_file)
@@ -72,15 +67,12 @@ impl Cache {
     pub(crate) fn get_onnx_from(url: &str) -> Result<PathBuf, MyError> {
         let cached_file = Cache::get_cached_filename(url)?;
         if !cached_file.exists() {
-            println!("... downloading file from {}", url);
             Self::ensure_crypto_provider();
 
             let mut file = File::create(&cached_file).map_err(Cache::make_cache_error)?;
             let client = reqwest::blocking::Client::new();
             let mut response = client.get(url).send().map_err(Cache::make_cache_error)?;
             std::io::copy(&mut response, &mut file).map_err(Cache::make_cache_error)?;
-        } else {
-            println!("... using cached file {:?}", cached_file);
         }
 
         Ok(cached_file)
@@ -106,18 +98,6 @@ impl Cache {
             ))),
         }
     }
-
-    pub fn list_cached_files() {
-        if let Some(path) = Self::get_cache_dir().ok().filter(|p| p.is_dir()) {
-            std::fs::read_dir(path)
-                .ok()
-                .into_iter()
-                // convert the Some(iter) into the iter..
-                .flatten()
-                .filter_map(|f| f.ok())
-                .for_each(|f| println!("{}", f.path().to_string_lossy()));
-        };
-    }
 }
 
 #[cfg(test)]
@@ -132,7 +112,6 @@ mod tests {
         let r =
             Cache::get_onnx_from("https://danielruss.github.io/soccer-models/SOCcer_v3.0.0.onnx");
         assert!(r.is_ok());
-        Cache::list_cached_files();
         let p = Cache::get_from_hf_hub("Xenova/GIST-small-Embedding-v0");
         assert!(p.is_ok());
         println!("model path: {:?}", p.unwrap_or_default());
