@@ -20,7 +20,6 @@ use crate::{
     },
     io::{CSVSchema, JobStream},
 };
-mod cache;
 mod classifier;
 mod crosswalk;
 mod error;
@@ -32,9 +31,10 @@ pub use crate::classifier::{
     PreprocessedJobDescription, SoccerBuilder, SoccerPipeline,
 };
 pub use crate::crosswalk::Crosswalk;
-pub use crate::error::MyError;
+pub use crate::error::SoccerError;
 
 #[derive(Debug, Deserialize)]
+/// A SOCcerNET job description deserialized from the legacy JSON field names.
 pub struct SOCcerJobDescription {
     #[serde(rename = "Id")]
     id: String,
@@ -74,6 +74,7 @@ impl Display for SOCcerJobDescription {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
+/// A CLIPS industry-coding job description.
 pub struct CLIPSJobDescription {
     id: String,
     products_services: String,
@@ -84,6 +85,7 @@ pub struct CLIPSJobDescription {
     sic1987: Vec<String>,
 }
 
+/// Loads and deserializes a JSON array from `path`.
 pub fn load_json<T: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<Vec<T>, String> {
     let file = File::open(path.as_ref()).map_err(|e| format!("Failed to open file: {}", e))?;
     let reader = BufReader::new(file);
@@ -91,6 +93,10 @@ pub fn load_json<T: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<Vec<T>,
     from_reader(reader).map_err(|e| e.to_string())
 }
 
+/// Loads valid records from a JSON Lines file.
+///
+/// This loader is intentionally lossy: lines that cannot be read or deserialized
+/// are logged and skipped, while valid records are returned.
 pub fn load_jsonl<T: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<Vec<T>, String> {
     let file = File::open(path.as_ref()).map_err(|e| format!("Failed to open file: {}", e))?;
 
@@ -114,43 +120,50 @@ pub fn load_jsonl<T: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<Vec<T>
     Ok(res)
 }
 
+/// A stream of CSV records paired with either a mapped job description or an error.
+pub type CsvJobStream<'a> = JobStream<
+    Box<dyn Iterator<Item = Result<csv::StringRecord, SoccerError>> + 'a>,
+    CSVSchema,
+    csv::StringRecord,
+>;
+
+/// Parses CSV content and returns a stream configured for `model_config`.
+///
+/// The CSV must contain the primary text column required by the selected model.
+/// Individual malformed records are returned through the stream rather than
+/// causing construction of the stream to fail.
 pub fn load_csv_str<'a, T: AsRef<str> + ?Sized>(
     content: &'a T,
     model_config: &ModelConfig,
-) -> Result<
-    io::JobStream<
-        Box<dyn Iterator<Item = Result<csv::StringRecord, MyError>> + 'a>,
-        CSVSchema,
-        csv::StringRecord,
-    >,
-    MyError,
-> {
+) -> Result<CsvJobStream<'a>, SoccerError> {
     let mut reader = csv::Reader::from_reader(content.as_ref().as_bytes());
     let headers = reader
         .headers()
-        .map_err(|e| MyError::BuilderError(e.to_string()))?
+        .map_err(|e| SoccerError::BuilderError(e.to_string()))?
         .clone();
 
     let mapper = CSVSchema::from_headers(&headers, model_config)?;
     let records_iter = Box::new(
         reader
             .into_records()
-            .map(|r| r.map_err(|e| MyError::BuilderError(e.to_string()))),
+            .map(|r| r.map_err(|e| SoccerError::BuilderError(e.to_string()))),
     );
 
     Ok(JobStream::new(records_iter, mapper))
 }
 
+/// Returns a built-in occupational or industry classification system by name.
 pub fn get_classification_system<T: AsRef<str>>(
     system: T,
-) -> Result<Arc<ClassificationSystem>, MyError> {
+) -> Result<Arc<ClassificationSystem>, SoccerError> {
     let classification_system = KnownClassificationSystem::from_str(system.as_ref())?;
     Ok(CLASSIFICATION_SYSTEM_REGISTRY.get_classification_system(classification_system))
 }
+/// Returns the built-in crosswalk from `system1` to `system2`.
 pub fn get_crosswalk<T1: AsRef<str>, T2: AsRef<str>>(
     system1: T1,
     system2: T2,
-) -> Result<Arc<Crosswalk>, MyError> {
+) -> Result<Arc<Crosswalk>, SoccerError> {
     let known_xw = KnownCrosswalk::find(
         KnownClassificationSystem::from_str(system1.as_ref())?,
         KnownClassificationSystem::from_str(system2.as_ref())?,
@@ -159,9 +172,13 @@ pub fn get_crosswalk<T1: AsRef<str>, T2: AsRef<str>>(
 }
 
 #[derive(Serialize, Debug)]
+/// One ranked occupational or industry coding result.
 pub struct SOCcerResult {
+    /// Classification code.
     pub code: String,
+    /// Human-readable classification title.
     pub title: String,
+    /// Model score for this classification.
     pub score: f32,
 }
 impl From<(&str, &str, f32)> for SOCcerResult {
@@ -174,21 +191,21 @@ impl From<(&str, &str, f32)> for SOCcerResult {
     }
 }
 
-/// Only Embed the job
-/// For a SOCcerNET Job.  
-/// Text1 = JobTitle, Text2 = Some(Job Task)
+/// Embeds job text without running the SOCcerNET or CLIPS classifier.
 ///
-/// For a CLIPS Job
-/// Text1 = Products Made/Services provided, Text2 = None
+/// For SOCcerNET, `text1` contains job titles and `text2` contains job tasks.
+/// For CLIPS, `text1` contains products or services and `text2` is `None`.
 pub fn embed_jobs(
     text1: &[&str],
     text2: Option<&[&str]>,
-) -> Result<EmbeddedJobDescriptions<'static>, MyError> {
+) -> Result<EmbeddedJobDescriptions<'static>, SoccerError> {
     // SOCcerNET and CLIPS both use the same embeddings.
     // TO DO: This really should take a version just
     let config = MODEL_CONFIG
         .get_default_version(&ModelType::SOCcerNET)
-        .ok_or_else(|| MyError::BuilderError("SOCcerNET not configured properly".to_string()))?;
+        .ok_or_else(|| {
+            SoccerError::BuilderError("SOCcerNET not configured properly".to_string())
+        })?;
     let mut pipeline = SoccerPipeline::build(config)?;
 
     // create a JobDescription...
@@ -206,27 +223,33 @@ pub fn embed_jobs(
     pipeline.embed_only(jd1)
 }
 
+/// Runs SOCcerNET for one job and returns the top `n` results.
+///
+/// If `version` is unavailable, the configured default SOCcerNET version is used.
 pub fn run_soccer_job(
     job_description: &JobDescription,
     version: &str,
     n: usize,
-) -> Result<Box<[SOCcerResult]>, MyError> {
+) -> Result<Box<[SOCcerResult]>, SoccerError> {
     let config =  match MODEL_CONFIG.get_config(&ModelType::SOCcerNET, version){
         Some(c) => c,
-        None => MODEL_CONFIG.get_default_version(&ModelType::SOCcerNET).ok_or_else(||MyError::SoccerError(format!("Unable to get either the requested or default version of SOCcer: \n\trequested version: {}",version)))?
+        None => MODEL_CONFIG.get_default_version(&ModelType::SOCcerNET).ok_or_else(||SoccerError::InferenceError(format!("Unable to get either the requested or default version of SOCcer: \n\trequested version: {}",version)))?
     };
 
     run_job(job_description, n, config)
 }
 
+/// Runs CLIPS for one job and returns the top `n` results.
+///
+/// If `version` is unavailable, the configured default CLIPS version is used.
 pub fn run_clips_job(
     job_description: &JobDescription,
     version: &str,
     n: usize,
-) -> Result<Box<[SOCcerResult]>, MyError> {
+) -> Result<Box<[SOCcerResult]>, SoccerError> {
     let config =  match MODEL_CONFIG.get_config(&ModelType::CLIPS, version){
         Some(c) => c,
-        None => MODEL_CONFIG.get_default_version(&ModelType::CLIPS).ok_or_else(||MyError::SoccerError(format!("Unable to get either the requested or default version of SOCcer: \n\trequested version: {}",version)))?
+        None => MODEL_CONFIG.get_default_version(&ModelType::CLIPS).ok_or_else(||SoccerError::InferenceError(format!("Unable to get either the requested or default version of SOCcer: \n\trequested version: {}",version)))?
     };
 
     run_job(job_description, n, config)
@@ -235,9 +258,9 @@ fn run_job(
     job_description: &JobDescription,
     n: usize,
     config: &ModelConfig,
-) -> Result<Box<[SOCcerResult]>, MyError> {
+) -> Result<Box<[SOCcerResult]>, SoccerError> {
     let mut soccer = SoccerPipeline::build(config)?;
-    let results = soccer.run1(&job_description)?;
+    let results = soccer.run1(job_description)?;
     let classification_system = config.output_system();
 
     let result: Vec<SOCcerResult> = results

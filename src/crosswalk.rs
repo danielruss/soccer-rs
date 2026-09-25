@@ -1,10 +1,12 @@
 #![allow(dead_code)]
 use std::{collections::HashMap, fs::File, path::PathBuf, str::FromStr, sync::Arc};
 
-use crate::{cache::Cache, error::MyError};
+use crate::error::SoccerError;
+
 use csv::{Reader, StringRecord};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
+use soccer_cache::Cache;
 
 pub trait Resolve {
     type Output;
@@ -143,7 +145,7 @@ impl Resolve for KnownClassificationSystem {
 }
 
 impl FromStr for KnownClassificationSystem {
-    type Err = MyError;
+    type Err = SoccerError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "soc1980" => Ok(Self::SOC1980),
@@ -152,7 +154,7 @@ impl FromStr for KnownClassificationSystem {
             "soc2010" => Ok(Self::SOC2010),
             "sic1987" => Ok(Self::SIC1987),
             "naics2022" => Ok(Self::NAICS2022),
-            _ => Err(MyError::ClassificationSystem(format!(
+            _ => Err(SoccerError::ClassificationSystem(format!(
                 "Unknown classification system {}",
                 s
             ))),
@@ -177,7 +179,7 @@ impl ClassificationSystem {
         self.lookup.get(code).copied()
     }
 
-    pub fn get_title<'a>(&'a self, index: u32) -> Option<&'a str> {
+    pub fn get_title(&self, index: u32) -> Option<&str> {
         let start = if index == 0 {
             0
         } else {
@@ -187,7 +189,7 @@ impl ClassificationSystem {
 
         Some(str::from_utf8(&self.titles[start..end]).unwrap_or_default())
     }
-    pub fn get_code<'a>(&'a self, index: u32) -> Option<&'a str> {
+    pub fn get_code(&self, index: u32) -> Option<&str> {
         let start = if index == 0 {
             0
         } else {
@@ -197,7 +199,7 @@ impl ClassificationSystem {
 
         Some(str::from_utf8(&self.codes[start..end]).unwrap_or_default())
     }
-    pub fn get_code_title<'a>(&'a self, index: u32) -> Option<(&'a str, &'a str)> {
+    pub fn get_code_title(&self, index: u32) -> Option<(&str, &str)> {
         let code_start = if index == 0 {
             0
         } else {
@@ -292,10 +294,11 @@ impl ClassificationSystem {
         }
     }
 
-    fn get_csv_reader<S: AsRef<str>>(url_or_path: S) -> Result<Reader<File>, MyError> {
+    fn get_csv_reader<S: AsRef<str>>(url_or_path: S) -> Result<Reader<File>, SoccerError> {
         let location = url_or_path.as_ref();
         let path = if Cache::is_url(location) {
-            Cache::cache_text_from(location)?
+            let cache = Cache::new()?;
+            cache.get_from_url(location)?
         } else {
             PathBuf::from(location)
         };
@@ -304,7 +307,7 @@ impl ClassificationSystem {
         Ok(Reader::from_reader(file))
     }
 
-    fn from_csv<S: AsRef<str>>(url_or_path: S) -> Result<Self, MyError> {
+    fn from_csv<S: AsRef<str>>(url_or_path: S) -> Result<Self, SoccerError> {
         let mut reader = Self::get_csv_reader(url_or_path)?;
 
         let rows: Vec<StringRecord> = reader.records().filter_map(|r| r.ok()).collect();
@@ -312,7 +315,7 @@ impl ClassificationSystem {
         Ok(Self::from_stringrecords(rows))
     }
 
-    fn from_csv_filtered<S, F>(url_or_path: S, filter: F) -> Result<Self, MyError>
+    fn from_csv_filtered<S, F>(url_or_path: S, filter: F) -> Result<Self, SoccerError>
     where
         S: AsRef<str>,
         F: Fn(&StringRecord) -> bool,
@@ -351,7 +354,7 @@ impl From<KnownClassificationSystem> for ClassificationSystem {
                         "Classfication Setup: malformed record on line {} in {:?} CSV {}",
                         line + 1,
                         value,
-                        e.to_string()
+                        e
                     )
                 })
             })
@@ -371,6 +374,7 @@ struct ClassificationSystemRow {
 }
 
 #[derive(Debug)]
+/// Mapping from codes in one classification system to indices in another.
 pub struct Crosswalk {
     source_cs: Arc<ClassificationSystem>,
     target_cs: Arc<ClassificationSystem>,
@@ -382,7 +386,7 @@ impl Crosswalk {
         value: KnownCrosswalk,
         source_cs: Arc<ClassificationSystem>,
         target_cs: Arc<ClassificationSystem>,
-    ) -> Result<Self, MyError> {
+    ) -> Result<Self, SoccerError> {
         let index_bytes: &[u8] = match value {
             KnownCrosswalk::SOC1980SOC2010 => include_bytes!("../data/soc1980_soc2010.csv"),
             KnownCrosswalk::NOC2011SOC2010 => include_bytes!("../data/noc2011_soc2010.csv"),
@@ -391,15 +395,13 @@ impl Crosswalk {
         };
         let source_len = source_cs.len();
 
-        let mut reader = Reader::from_reader(&index_bytes[..]);
+        let mut reader = Reader::from_reader(index_bytes);
         let index_mapping = reader.records().try_fold(
             HashMap::with_capacity(source_len),
             |mut acc: HashMap<u32, Vec<u32>>,
              rec: Result<StringRecord, csv::Error>|
-             -> Result<HashMap<u32, Vec<u32>>, MyError> {
-                let record = rec.map_err(|_| {
-                    MyError::CacheError(format!("Problem reading Crosswalk: {:?}", value))
-                })?;
+             -> Result<HashMap<u32, Vec<u32>>, SoccerError> {
+                let record = rec?;
 
                 let source_code = &record[0];
                 let target_code = &record[1];
@@ -407,14 +409,14 @@ impl Crosswalk {
                 let source_index =
                     source_cs
                         .lookup_index(source_code)
-                        .ok_or(MyError::CacheError(format!(
+                        .ok_or(SoccerError::Crosswalk(format!(
                             "Crosswalk {:?}: Code {}: does not exist ",
                             value, source_code
                         )))?;
                 let target_index =
                     target_cs
                         .lookup_index(target_code)
-                        .ok_or(MyError::CacheError(format!(
+                        .ok_or(SoccerError::Crosswalk(format!(
                             "Crosswalk {:?}: Code {}: does not exist ",
                             value, target_code
                         )))?;
@@ -444,6 +446,9 @@ impl Crosswalk {
             .collect()
     }
 
+    /// Appends target classification indices for `codes` to `out`.
+    ///
+    /// Unknown source codes are ignored.
     pub fn crosswalk_into(&self, codes: &[&str], out: &mut Vec<u16>) {
         codes.iter().for_each(|&code| {
             self.source_cs
@@ -468,7 +473,7 @@ impl KnownCrosswalk {
     pub fn find(
         from: KnownClassificationSystem,
         to: KnownClassificationSystem,
-    ) -> Result<KnownCrosswalk, MyError> {
+    ) -> Result<KnownCrosswalk, SoccerError> {
         match (from, to) {
             (KnownClassificationSystem::SOC1980, KnownClassificationSystem::SOC2010) => {
                 Ok(KnownCrosswalk::SOC1980SOC2010)
@@ -482,7 +487,7 @@ impl KnownCrosswalk {
             (KnownClassificationSystem::SIC1987, KnownClassificationSystem::NAICS2022) => {
                 Ok(KnownCrosswalk::SIC1987NAICS2022)
             }
-            (a, b) => Err(MyError::Crosswalk(format!(
+            (a, b) => Err(SoccerError::Crosswalk(format!(
                 "Unknown Crosswalk {:?} to {:?}",
                 a, b
             ))),
@@ -513,8 +518,9 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires network access"]
     fn test_download() {
-        let x: Result<ClassificationSystem, MyError> = ClassificationSystem::from_csv(
+        let x: Result<ClassificationSystem, SoccerError> = ClassificationSystem::from_csv(
             "https://danielruss.github.io/codingsystems/soc1980_all.csv",
         );
         assert!(x.is_ok());
@@ -522,7 +528,7 @@ mod tests {
         println!("{}", x.codes[0]);
         println!("{:?}", x.lookup.get("9911"));
 
-        let x: Result<ClassificationSystem, MyError> = ClassificationSystem::from_csv_filtered(
+        let x: Result<ClassificationSystem, SoccerError> = ClassificationSystem::from_csv_filtered(
             "https://danielruss.github.io/codingsystems/soc1980_all.csv",
             |row| row.get(2).map_or(false, |v| v == "unit"),
         );
