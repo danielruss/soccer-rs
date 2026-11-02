@@ -511,8 +511,6 @@ struct CrosswalkRow {
 
 #[cfg(test)]
 mod tests {
-    use std::u32;
-
     use crate::{get_classification_system, get_crosswalk};
 
     use super::*;
