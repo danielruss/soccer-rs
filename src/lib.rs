@@ -414,10 +414,13 @@ mod tests {
             .unwrap();
         let classification_system = config.output_system();
         let mut soccer = SoccerPipeline::build(config).expect("Problem building SOCcerNET");
-        let csv_data = "id,JobTitle,jobtask,census2000\n\
-                        libtest2csv-1,Software Engineer,Writes code,102\n\
-                        libtest2csv-3,Data Scientist,Analyzes data,122\n
-                        libtest2csv-4,lawyer,save clients from jail,210";
+        let csv_data = "id,JobTitle,jobtask,census2000\n
+                        libtest2csv-1,Software Engineer,Writes code,\n
+                        libtest2csv-1a,Software Engineer,Writes code,102\n
+                        libtest2csv-3,Data Scientist,Analyzes data,1\n
+                        libtest2csv-3a,Data Scientist,Analyzes data,122\n
+                        libtest2csv-4,lawyer,save clients from jail,\n
+                        libtest2csv-4a,lawyer,save clients from jail,210";
         let n = 2;
         let job_descriptions =
             load_csv_str(csv_data, config).expect("The file structure should be valid");
