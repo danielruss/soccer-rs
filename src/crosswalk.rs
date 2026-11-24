@@ -16,6 +16,7 @@ pub trait Resolve {
 #[derive(Debug)]
 pub struct ClassificationSystemRegistry {
     pub soc1980: Arc<ClassificationSystem>,
+    pub census2000: Arc<ClassificationSystem>,
     pub noc2011: Arc<ClassificationSystem>,
     pub isco1988: Arc<ClassificationSystem>,
     pub soc2010: Arc<ClassificationSystem>,
@@ -23,6 +24,7 @@ pub struct ClassificationSystemRegistry {
     pub naics2022: Arc<ClassificationSystem>,
 
     pub soc1980_soc2010: Arc<Crosswalk>,
+    pub census2000_soc2010: Arc<Crosswalk>,
     pub noc2011_soc2010: Arc<Crosswalk>,
     pub isco1988_soc2010: Arc<Crosswalk>,
     pub sic1987_naics2022: Arc<Crosswalk>,
@@ -35,6 +37,7 @@ impl ClassificationSystemRegistry {
     ) -> Arc<ClassificationSystem> {
         match classification_system {
             KnownClassificationSystem::SOC1980 => self.soc1980.clone(),
+            KnownClassificationSystem::CENSUS2000 => self.census2000.clone(),
             KnownClassificationSystem::NOC2011 => self.noc2011.clone(),
             KnownClassificationSystem::ISCO1988 => self.isco1988.clone(),
             KnownClassificationSystem::SOC2010 => self.soc2010.clone(),
@@ -45,6 +48,7 @@ impl ClassificationSystemRegistry {
     pub fn get_crosswalk(&self, crosswalk: KnownCrosswalk) -> Arc<Crosswalk> {
         match crosswalk {
             KnownCrosswalk::SOC1980SOC2010 => self.soc1980_soc2010.clone(),
+            KnownCrosswalk::CENSUS2000SOC2010 => self.census2000_soc2010.clone(),
             KnownCrosswalk::NOC2011SOC2010 => self.noc2011_soc2010.clone(),
             KnownCrosswalk::ISCO1988SOC2010 => self.isco1988_soc2010.clone(),
             KnownCrosswalk::SIC1987NAICS2022 => self.sic1987_naics2022.clone(),
@@ -55,6 +59,9 @@ impl ClassificationSystemRegistry {
 pub static CLASSIFICATION_SYSTEM_REGISTRY: Lazy<ClassificationSystemRegistry> = Lazy::new(|| {
     let soc1980 = Arc::new(ClassificationSystem::from(
         KnownClassificationSystem::SOC1980,
+    ));
+    let census2000 = Arc::new(ClassificationSystem::from(
+        KnownClassificationSystem::CENSUS2000,
     ));
     let noc2011 = Arc::new(ClassificationSystem::from(
         KnownClassificationSystem::NOC2011,
@@ -77,6 +84,14 @@ pub static CLASSIFICATION_SYSTEM_REGISTRY: Lazy<ClassificationSystemRegistry> = 
         Crosswalk::new(
             KnownCrosswalk::SOC1980SOC2010,
             soc1980.clone(),
+            soc2010.clone(),
+        )
+        .unwrap_or_else(|e| panic!("soc1980 -> soc2010 crosswalk is invalid: {e}")),
+    );
+    let census2000_soc2010 = Arc::new(
+        Crosswalk::new(
+            KnownCrosswalk::CENSUS2000SOC2010,
+            census2000.clone(),
             soc2010.clone(),
         )
         .unwrap_or_else(|e| panic!("soc1980 -> soc2010 crosswalk is invalid: {e}")),
@@ -108,12 +123,14 @@ pub static CLASSIFICATION_SYSTEM_REGISTRY: Lazy<ClassificationSystemRegistry> = 
 
     ClassificationSystemRegistry {
         soc1980,
+        census2000,
         noc2011,
         isco1988,
         soc2010,
         sic1987,
         naics2022,
         soc1980_soc2010,
+        census2000_soc2010,
         noc2011_soc2010,
         isco1988_soc2010,
         sic1987_naics2022,
@@ -124,6 +141,8 @@ pub static CLASSIFICATION_SYSTEM_REGISTRY: Lazy<ClassificationSystemRegistry> = 
 pub enum KnownClassificationSystem {
     #[serde(rename = "soc1980")]
     SOC1980,
+    #[serde(rename = "census2000")]
+    CENSUS2000,
     #[serde(rename = "noc2011")]
     NOC2011,
     #[serde(rename = "isco1988")]
@@ -149,6 +168,7 @@ impl FromStr for KnownClassificationSystem {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "soc1980" => Ok(Self::SOC1980),
+            "census2000" => Ok(Self::CENSUS2000),
             "noc2011" => Ok(Self::NOC2011),
             "isco1988" => Ok(Self::ISCO1988),
             "soc2010" => Ok(Self::SOC2010),
@@ -335,6 +355,7 @@ impl From<KnownClassificationSystem> for ClassificationSystem {
     fn from(value: KnownClassificationSystem) -> Self {
         let text_bytes: &[u8] = match value {
             KnownClassificationSystem::SOC1980 => include_bytes!("../data/soc1980.csv"),
+            KnownClassificationSystem::CENSUS2000 => include_bytes!("../data/census2000.csv"),
             KnownClassificationSystem::NOC2011 => include_bytes!("../data/noc2011.csv"),
             KnownClassificationSystem::ISCO1988 => include_bytes!("../data/isco1988.csv"),
             KnownClassificationSystem::SOC2010 => include_bytes!("../data/soc2010.csv"),
@@ -389,6 +410,7 @@ impl Crosswalk {
     ) -> Result<Self, SoccerError> {
         let index_bytes: &[u8] = match value {
             KnownCrosswalk::SOC1980SOC2010 => include_bytes!("../data/soc1980_soc2010.csv"),
+            KnownCrosswalk::CENSUS2000SOC2010 => include_bytes!("../data/census2000_soc2010.csv"),
             KnownCrosswalk::NOC2011SOC2010 => include_bytes!("../data/noc2011_soc2010.csv"),
             KnownCrosswalk::ISCO1988SOC2010 => include_bytes!("../data/isco1988_soc2010.csv"),
             KnownCrosswalk::SIC1987NAICS2022 => include_bytes!("../data/sic1987_naics2022.csv"),
@@ -465,6 +487,7 @@ impl Crosswalk {
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum KnownCrosswalk {
     SOC1980SOC2010,
+    CENSUS2000SOC2010,
     NOC2011SOC2010,
     ISCO1988SOC2010,
     SIC1987NAICS2022,
@@ -477,6 +500,9 @@ impl KnownCrosswalk {
         match (from, to) {
             (KnownClassificationSystem::SOC1980, KnownClassificationSystem::SOC2010) => {
                 Ok(KnownCrosswalk::SOC1980SOC2010)
+            }
+            (KnownClassificationSystem::CENSUS2000, KnownClassificationSystem::SOC2010) => {
+                Ok(KnownCrosswalk::CENSUS2000SOC2010)
             }
             (KnownClassificationSystem::NOC2011, KnownClassificationSystem::SOC2010) => {
                 Ok(KnownCrosswalk::NOC2011SOC2010)
@@ -511,6 +537,8 @@ struct CrosswalkRow {
 
 #[cfg(test)]
 mod tests {
+    use itertools::Itertools;
+
     use crate::{get_classification_system, get_crosswalk};
 
     use super::*;
@@ -568,23 +596,9 @@ mod tests {
         let r1 = soc1980_soc2010.crosswalk(&["111", "1131"]);
         let r2 = soc1980_soc2010.crosswalk(&["110"]);
         println!("{:?}\n{:?}", r1, r2);
-
-        r1.iter().for_each(|&res| {
-            println!("=== {:?}", res);
-            res.iter().for_each(|&index| {
-                println!("\t\t{:?}", soc1980_soc2010.target_cs.get_code_title(index))
-            });
-        });
-        r2.iter().for_each(|&res| {
-            println!("=== {:?}", res);
-            res.iter().for_each(|&index| {
-                println!("\t\t{:?}", soc1980_soc2010.target_cs.get_code_title(index))
-            });
-        });
-
         println!("===== Testing SIC-> NAICS");
         let sic1987_naics2022 = get_crosswalk("sic1987", "naics2022").unwrap();
-        dbg!(&sic1987_naics2022);
+        //dbg!(&sic1987_naics2022);
         let r1 = sic1987_naics2022.crosswalk(&["7372"]);
         r1.iter().for_each(|&res| {
             println!("=== {:?}", res);
@@ -596,6 +610,28 @@ mod tests {
         let mut my_vec: Vec<u16> = Vec::new();
         sic1987_naics2022.crosswalk_into(&["7372"], &mut my_vec);
         assert!(!my_vec.is_empty());
+    }
+
+    #[test]
+    fn test_census_xw() {
+        println!("===== Testing Census 2000 -> SOC2010");
+        let census2000_soc2010 =
+            CLASSIFICATION_SYSTEM_REGISTRY.get_crosswalk(KnownCrosswalk::CENSUS2000SOC2010);
+        let c2k = census2000_soc2010.source_cs.clone();
+        c2k.lookup
+            .keys()
+            .sorted()
+            .take(10)
+            .for_each(|c| println!("code: {c}"));
+
+        let x = c2k.lookup_index("006");
+        println!("lookup \"006\" {:?}", x);
+
+        let mut my_vec: Vec<u16> = Vec::new();
+        census2000_soc2010.crosswalk_into(&["006"], &mut my_vec);
+        assert!(!my_vec.is_empty());
+        assert_eq!(my_vec.len(), 1);
+        assert_eq!(my_vec[0], 6);
     }
 
     #[test]
@@ -637,5 +673,11 @@ mod tests {
             689usize,
             KnownClassificationSystem::NAICS2022.resolve().len()
         );
+    }
+
+    #[test]
+    fn test_census() {
+        let x = KnownClassificationSystem::CENSUS2000.resolve();
+        println!("{:?}", x.len())
     }
 }

@@ -50,6 +50,8 @@ pub struct SOCcerJobDescription {
     #[serde(default)]
     soc2018: Vec<String>,
     #[serde(default)]
+    census2000: Vec<String>,
+    #[serde(default)]
     isco1988: Vec<String>,
     #[serde(default)]
     noc2011: Vec<String>,
@@ -337,6 +339,119 @@ mod tests {
                 .all(|(a, e)| (a - e).abs() < tol)
     }
 
+    #[test]
+    fn test_isco1988_csv_priors() {
+        let config = MODEL_CONFIG
+            .get_config(&ModelType::SOCcerNET, "1.0.0")
+            .unwrap();
+        let source_system = get_classification_system("isco1988").unwrap();
+        assert!(source_system.lookup_index("2421").is_some());
+        let crosswalk = get_crosswalk("isco1988", "soc2010").unwrap();
+        let csv_data = "id,JobTitle,jobtask,ISCO1988\n\
+                        law,lawyer,legal advice,2421\n\
+                        software,programmer,writes code,2132\n\
+                        missing,clerk,office work,";
+        let jobs: Vec<_> = load_csv_str(csv_data, config)
+            .unwrap()
+            .map(|(job, _)| job.unwrap())
+            .collect();
+        assert_eq!(jobs.len(), 3);
+        let expected_codes: &[&[&str]] = &[
+            &["23-1011"],
+            &["15-1131", "15-1134", "15-1143", "15-1199"],
+            &[],
+        ];
+        let output_system = config.output_system();
+        for (job, expected) in jobs.iter().zip(expected_codes) {
+            let actual: Vec<_> = job
+                .multihot_prior
+                .iter()
+                .map(|&index| output_system.get_code(u32::from(index)).unwrap())
+                .collect();
+            assert_eq!(actual, *expected);
+        }
+        let mut direct_prior = Vec::new();
+        crosswalk.crosswalk_into(&["2421"], &mut direct_prior);
+        assert_eq!(jobs[0].multihot_prior.as_ref(), direct_prior);
+
+        let mut pipeline = SoccerPipeline::build(config).unwrap();
+        let refs: Vec<_> = jobs.iter().collect();
+        let results = pipeline.run(&refs).unwrap();
+        assert_eq!(results.len(), jobs.len());
+        let top = &results[0].scored_code_index[0];
+        assert_eq!(output_system.get_code(top.0 as u32), Some("23-1011"));
+        assert!(top.1.is_finite());
+    }
+
+    #[test]
+    fn test_cen2k_csv_priors() {
+        let config = MODEL_CONFIG
+            .get_config(&ModelType::SOCcerNET, "1.0.0")
+            .unwrap();
+        let csv_data = "id,JobTitle,jobtask,census2000\n\
+                        software,Software Engineer,Writes code,102\n\
+                        science,Data Scientist,Analyzes data,122\n\
+                        law,lawyer,save clients from jail,210";
+        let expected_codes: &[&[&str]] = &[&["15-1132", "15-1133"], &["15-2031"], &["23-1011"]];
+        let jobs: Vec<_> = load_csv_str(csv_data, config).unwrap().collect();
+        assert_eq!(jobs.len(), expected_codes.len());
+        let output_system = config.output_system();
+        for ((job, _), expected) in jobs.into_iter().zip(expected_codes) {
+            let job = job.unwrap();
+            let actual: Vec<_> = job
+                .multihot_prior
+                .iter()
+                .map(|&index| output_system.get_code(u32::from(index)).unwrap())
+                .collect();
+            assert_eq!(actual, *expected);
+        }
+    }
+
+    #[test]
+    fn test_cen2k() {
+        let config = MODEL_CONFIG
+            .get_config(&ModelType::SOCcerNET, "1.0.0")
+            .unwrap();
+        let classification_system = config.output_system();
+        let mut soccer = SoccerPipeline::build(config).expect("Problem building SOCcerNET");
+        let csv_data = "id,JobTitle,jobtask,census2000\n\
+                        libtest2csv-1,Software Engineer,Writes code,102\n\
+                        libtest2csv-3,Data Scientist,Analyzes data,122\n
+                        libtest2csv-4,lawyer,save clients from jail,210";
+        let n = 2;
+        let job_descriptions =
+            load_csv_str(csv_data, config).expect("The file structure should be valid");
+
+        for chunk in &job_descriptions.into_iter().chunks(2) {
+            let (successes, errors): (Vec<_>, Vec<_>) =
+                chunk.into_iter().partition_map(|(res, rec)| match res {
+                    Ok(jd) => Either::Left((jd, rec)),
+                    Err(e) => Either::Right((e, rec)),
+                });
+
+            if !successes.is_empty() {
+                let (job_batch, og_input): (Vec<JobDescription>, Vec<csv::StringRecord>) =
+                    successes.into_iter().unzip();
+                let refs: Vec<&JobDescription> = job_batch.iter().collect();
+                refs.iter()
+                    .for_each(|x| println!("job description: {:?}", x));
+                let results = soccer.run(&refs).unwrap();
+
+                results.iter().zip(og_input.iter()).for_each(|(job, sr)| {
+                    println!("{:?}:", sr);
+                    job.scored_code_index.iter().take(n).for_each(|si| {
+                        let (code, title) =
+                            classification_system.get_code_title(si.0 as u32).unwrap();
+                        println!("\t{}\t{}\t{:4}", code, title, si.1)
+                    });
+                });
+            }
+            errors.iter().for_each(|(e, record)| {
+                // Here you have both the error and the record that caused it!
+                eprintln!("Skipping Record due to Error: {}\nRecord: {:?}", e, record);
+            });
+        }
+    }
     #[test]
     fn test_embed() {
         let doctor: EmbeddedJobDescriptions<'_> = embed_jobs(&["doctor"], Some(&[""])).unwrap();
